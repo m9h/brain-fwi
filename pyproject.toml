@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brain-fwi"
+version = "0.1.0"
+description = "Full Waveform Inversion of the human brain using transcranial ultrasound"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Morgan Hough" }]
+
+dependencies = [
+    "jax[cuda12]>=0.4.30",
+    "jwave>=0.2.0",
+    "jaxdf>=0.3.0",
+    "equinox>=0.11.0",
+    "optax>=0.2.0",
+    "numpy>=1.26.0",
+    "nibabel>=5.0.0",
+    "brainweb-dl>=0.3.0",
+    "matplotlib>=3.8.0",
+    "h5py>=3.8.0",
+    "scipy>=1.12.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-xdist"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brain_fwi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
