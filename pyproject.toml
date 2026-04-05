@@ -12,9 +12,9 @@ requires-python = ">=3.10"
 authors = [{ name = "Morgan Hough" }]
 
 dependencies = [
-    "jax[cuda12]>=0.4.30",
+    "jax>=0.4.30",
     "jwave>=0.2.0",
-    "jaxdf>=0.3.0",
+    "jaxdf>=0.2.7",
     "equinox>=0.11.0",
     "optax>=0.2.0",
     "numpy>=1.26.0",
@@ -34,3 +34,8 @@ packages = ["src/brain_fwi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

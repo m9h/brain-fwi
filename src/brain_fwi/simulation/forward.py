@@ -1,0 +1,367 @@
+"""Forward acoustic simulation via j-Wave for brain FWI.
+
+Wraps j-Wave's pseudospectral time-domain (PSTD) solver to provide:
+  - Domain and medium construction from acoustic property arrays
+  - Single-shot simulation with sensor recording
+  - Batched data generation (all sources → all receivers)
+
+The forward operator is fully differentiable via JAX autodiff, which is
+the key advantage over Stride's Devito-based adjoint approach.
+
+References:
+    - Stanziola et al. (2022). j-Wave. arXiv:2207.01499.
+    - Treeby & Cox (2010). k-Wave: MATLAB toolbox.
+"""
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from typing import Dict, Optional, Tuple, Union
+from functools import partial
+
+from ..utils.wavelets import ricker_wavelet
+
+
+# ---------------------------------------------------------------------------
+# Domain / Medium construction
+# ---------------------------------------------------------------------------
+
+def build_domain(grid_shape: Tuple[int, ...], dx: float):
+    """Create a j-Wave computational domain.
+
+    Args:
+        grid_shape: (nx, ny) or (nx, ny, nz).
+        dx: Uniform grid spacing in metres.
+
+    Returns:
+        jaxdf.geometry.Domain
+    """
+    from jaxdf.geometry import Domain
+    ndim = len(grid_shape)
+    return Domain(grid_shape, tuple([dx] * ndim))
+
+
+def build_medium(
+    domain,
+    sound_speed: Union[float, jnp.ndarray],
+    density: Union[float, jnp.ndarray],
+    pml_size: int = 20,
+):
+    """Create a j-Wave medium from acoustic property arrays.
+
+    Args:
+        domain: jaxdf Domain.
+        sound_speed: Scalar or array matching domain.N. Units: m/s.
+        density: Scalar or array. Units: kg/m^3.
+        pml_size: PML absorbing boundary thickness in grid points.
+
+    Returns:
+        jwave.geometry.Medium
+    """
+    from jwave import FourierSeries
+    from jwave.geometry import Medium
+
+    def to_field(val):
+        if isinstance(val, (int, float)):
+            return val
+        arr = jnp.asarray(val, dtype=jnp.float32)
+        if arr.ndim == len(domain.N):
+            arr = arr[..., jnp.newaxis]
+        return FourierSeries(arr, domain)
+
+    return Medium(
+        domain=domain,
+        sound_speed=to_field(sound_speed),
+        density=to_field(density),
+        pml_size=pml_size,
+    )
+
+
+def build_time_axis(medium, cfl: float = 0.3, t_end: Optional[float] = None):
+    """Compute stable time axis from medium properties.
+
+    Args:
+        medium: j-Wave Medium.
+        cfl: CFL stability number (< 1).
+        t_end: End time in seconds. None = auto from domain traversal.
+
+    Returns:
+        jwave.geometry.TimeAxis
+    """
+    from jwave.geometry import TimeAxis
+    return TimeAxis.from_medium(medium, cfl=cfl, t_end=t_end)
+
+
+# ---------------------------------------------------------------------------
+# Source construction
+# ---------------------------------------------------------------------------
+
+def _build_source_signal(
+    freq: float,
+    dt: float,
+    n_samples: int,
+) -> jnp.ndarray:
+    """Build a Ricker wavelet source signal."""
+    return ricker_wavelet(freq, dt, n_samples)
+
+
+def _build_sources(
+    domain,
+    src_position_grid: Tuple[int, ...],
+    signal: jnp.ndarray,
+    dt: float,
+):
+    """Create j-Wave Sources for a single point source.
+
+    Args:
+        domain: jaxdf Domain.
+        src_position_grid: Grid indices (ix, iy) or (ix, iy, iz).
+        signal: (n_samples,) source signal.
+        dt: Time step.
+
+    Returns:
+        jwave.geometry.Sources
+    """
+    from jwave.geometry import Sources
+
+    ndim = len(domain.N)
+    pos_tuple = tuple([src_position_grid[d]] for d in range(ndim))
+    signals = signal[jnp.newaxis, :]  # (1, n_samples)
+
+    return Sources(
+        positions=pos_tuple,
+        signals=signals,
+        dt=dt,
+        domain=domain,
+    )
+
+
+def _build_sensors(domain, sensor_positions_grid: Tuple):
+    """Create j-Wave Sensors at grid positions.
+
+    Args:
+        domain: jaxdf Domain.
+        sensor_positions_grid: Tuple of arrays, one per dimension.
+            Each array is (n_sensors,) of int indices.
+
+    Returns:
+        jwave.geometry.Sensors
+    """
+    from jwave.geometry import Sensors
+    positions = tuple(
+        [int(sensor_positions_grid[d][i]) for i in range(len(sensor_positions_grid[0]))]
+        for d in range(len(domain.N))
+    )
+    return Sensors(positions=positions)
+
+
+# ---------------------------------------------------------------------------
+# Single-shot simulation
+# ---------------------------------------------------------------------------
+
+def simulate_shot(
+    medium,
+    time_axis,
+    src_position_grid: Tuple[int, ...],
+    freq: float,
+    checkpoint: bool = True,
+) -> jnp.ndarray:
+    """Simulate a single source and return the full pressure field.
+
+    Returns the final-timestep pressure field (for visualization).
+    For FWI, use simulate_shot_sensors instead.
+
+    Args:
+        medium: j-Wave Medium.
+        time_axis: j-Wave TimeAxis.
+        src_position_grid: Source position as grid indices.
+        freq: Source frequency in Hz.
+        checkpoint: Use gradient checkpointing to save memory.
+
+    Returns:
+        Pressure field array with shape matching domain.
+    """
+    from jwave.acoustics.time_varying import simulate_wave_propagation
+
+    dt = float(time_axis.dt)
+    n_samples = int(float(time_axis.t_end) / dt)
+    signal = _build_source_signal(freq, dt, n_samples)
+    sources = _build_sources(medium.domain, src_position_grid, signal, dt)
+
+    settings = None
+    if checkpoint:
+        from jwave.acoustics.time_varying import TimeWavePropagationSettings
+        settings = TimeWavePropagationSettings(checkpoint=True)
+
+    p_final = simulate_wave_propagation(
+        medium, time_axis, sources=sources, settings=settings,
+    )
+    return p_final
+
+
+def simulate_shot_sensors(
+    medium,
+    time_axis,
+    src_position_grid: Tuple[int, ...],
+    sensor_positions_grid: Tuple,
+    source_signal: jnp.ndarray,
+    dt: float,
+) -> jnp.ndarray:
+    """Simulate a single source and record at sensor positions.
+
+    This is the core forward operator for FWI. It runs a full time-domain
+    simulation and extracts the pressure time series at sensor locations.
+
+    Args:
+        medium: j-Wave Medium.
+        time_axis: j-Wave TimeAxis.
+        src_position_grid: Source grid indices (ix, iy[, iz]).
+        sensor_positions_grid: Tuple of (n_sensors,) index arrays.
+        source_signal: (n_samples,) source wavelet.
+        dt: Time step.
+
+    Returns:
+        (n_timesteps, n_sensors) array of recorded pressure.
+    """
+    from jwave.acoustics.time_varying import (
+        simulate_wave_propagation,
+        TimeWavePropagationSettings,
+    )
+
+    sources = _build_sources(medium.domain, src_position_grid, source_signal, dt)
+
+    settings = TimeWavePropagationSettings(checkpoint=True)
+
+    # j-Wave returns pressure field snapshots
+    # We run the simulation and sample at sensor locations
+    p_field = simulate_wave_propagation(
+        medium, time_axis, sources=sources, settings=settings,
+    )
+
+    # Extract sensor data from the pressure field
+    return _extract_sensor_data(p_field, sensor_positions_grid)
+
+
+def _extract_sensor_data(
+    pressure_output,
+    sensor_positions: Tuple,
+) -> jnp.ndarray:
+    """Extract time series at sensor positions from j-Wave output.
+
+    j-Wave returns different types depending on version:
+    - List of FourierSeries (one per timestep)
+    - Stacked array (n_timesteps, *spatial_dims)
+    - Single FourierSeries with time dimension
+
+    Args:
+        pressure_output: j-Wave simulation output.
+        sensor_positions: Tuple of index arrays (one per spatial dim).
+
+    Returns:
+        (n_timesteps, n_sensors) array.
+    """
+    # Convert to raw array
+    p_data = _to_array(pressure_output)
+
+    if p_data.ndim == len(sensor_positions) + 1:
+        # Shape: (n_timesteps, *spatial_dims)
+        # Index into spatial dims at each sensor position
+        return p_data[:, sensor_positions[0], sensor_positions[1]] \
+            if len(sensor_positions) == 2 \
+            else p_data[:, sensor_positions[0], sensor_positions[1], sensor_positions[2]]
+    else:
+        # Single snapshot — expand time dim
+        if len(sensor_positions) == 2:
+            return p_data[sensor_positions[0], sensor_positions[1]][jnp.newaxis, :]
+        return p_data[sensor_positions[0], sensor_positions[1], sensor_positions[2]][jnp.newaxis, :]
+
+
+def _to_array(pressure_output) -> jnp.ndarray:
+    """Convert j-Wave pressure output to a plain JAX array."""
+    if isinstance(pressure_output, (list, tuple)):
+        frames = []
+        for frame in pressure_output:
+            if hasattr(frame, "params"):
+                data = frame.params
+            elif hasattr(frame, "on_grid"):
+                data = frame.on_grid
+            else:
+                data = jnp.asarray(frame)
+            if data.ndim > 0 and data.shape[-1] == 1:
+                data = data[..., 0]
+            frames.append(data)
+        return jnp.stack(frames, axis=0)
+    elif hasattr(pressure_output, "params"):
+        data = pressure_output.params
+        if data.shape[-1] == 1:
+            data = data[..., 0]
+        return data
+    else:
+        data = jnp.asarray(pressure_output)
+        if data.ndim > 1 and data.shape[-1] == 1:
+            data = data[..., 0]
+        return data
+
+
+# ---------------------------------------------------------------------------
+# Batched data generation
+# ---------------------------------------------------------------------------
+
+def generate_observed_data(
+    sound_speed: jnp.ndarray,
+    density: jnp.ndarray,
+    dx: float,
+    src_positions_grid: list,
+    sensor_positions_grid: Tuple,
+    freq: float,
+    pml_size: int = 20,
+    cfl: float = 0.3,
+    t_end: Optional[float] = None,
+    verbose: bool = True,
+) -> jnp.ndarray:
+    """Generate synthetic observed data for all source-receiver pairs.
+
+    Runs one forward simulation per source, records at all sensors.
+    This is used to create the 'ground truth' data for FWI.
+
+    Args:
+        sound_speed: (*spatial_dims) sound speed array (m/s).
+        density: (*spatial_dims) density array (kg/m^3).
+        dx: Grid spacing (m).
+        src_positions_grid: List of tuples, each (ix, iy[, iz]).
+        sensor_positions_grid: Tuple of index arrays for receivers.
+        freq: Source frequency (Hz).
+        pml_size: PML thickness.
+        cfl: CFL number.
+        t_end: Simulation end time. None = auto.
+        verbose: Print progress.
+
+    Returns:
+        (n_sources, n_timesteps, n_sensors) array of recorded data.
+    """
+    grid_shape = sound_speed.shape
+    domain = build_domain(grid_shape, dx)
+    medium = build_medium(domain, sound_speed, density, pml_size=pml_size)
+    time_axis = build_time_axis(medium, cfl=cfl, t_end=t_end)
+
+    dt = float(time_axis.dt)
+    n_samples = int(float(time_axis.t_end) / dt)
+    source_signal = _build_source_signal(freq, dt, n_samples)
+
+    n_sources = len(src_positions_grid)
+    all_data = []
+
+    for i, src_pos in enumerate(src_positions_grid):
+        if verbose:
+            print(f"  Forward shot {i+1}/{n_sources}", end="\r")
+
+        d = simulate_shot_sensors(
+            medium, time_axis, src_pos, sensor_positions_grid,
+            source_signal, dt,
+        )
+        all_data.append(d)
+
+    if verbose:
+        print(f"  Forward shots: {n_sources}/{n_sources} done")
+
+    return jnp.stack(all_data, axis=0)
