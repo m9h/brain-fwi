@@ -77,8 +77,9 @@ class TestJacobianComputation:
         assert jnp.all(jnp.isfinite(result))
 
 
+@pytest.mark.slow
 class TestResolutionMatrix:
-    """Validate resolution matrix and PSF computation."""
+    """Validate resolution matrix and PSF computation. Heavy on CPU."""
 
     def test_psf_has_correct_shape(self):
         """PSF should match grid shape."""
@@ -128,8 +129,9 @@ class TestResolutionMatrix:
         assert width_16 <= width_8
 
 
+@pytest.mark.slow
 class TestCoverageMetrics:
-    """Validate coverage / sensitivity metrics."""
+    """Validate coverage / sensitivity metrics. Heavy on CPU."""
 
     def test_sensitivity_map_shape(self):
         """Sensitivity map should match grid shape."""

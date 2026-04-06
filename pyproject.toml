@@ -34,6 +34,9 @@ packages = ["src/brain_fwi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests that take >60s (deselect with -m 'not slow')",
+]
 
 [dependency-groups]
 dev = [
