@@ -47,16 +47,15 @@ image = (
 mida_vol = modal.Volume.from_name("mida-data", create_if_missing=True)
 
 
-# Mount the local brain-fwi source code into the container
-brain_fwi_mount = modal.Mount.from_local_dir(
+# Install brain-fwi source into the image directly
+image = image.copy_local_dir(
     "/Users/mhough/dev/brain-fwi/src",
     remote_path="/opt/brain-fwi-src",
 )
 
 
 @app.function(image=image, gpu="A100", timeout=3600, memory=32768,
-              volumes={"/mida": mida_vol},
-              mounts=[brain_fwi_mount])
+              volumes={"/mida": mida_vol})
 def run_mida_256():
     import time
     import numpy as np
