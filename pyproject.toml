@@ -12,9 +12,9 @@ requires-python = ">=3.10"
 authors = [{ name = "Morgan Hough" }]
 
 dependencies = [
-    "jax>=0.4.30",
-    "jwave>=0.2.0",
-    "jaxdf>=0.2.7",
+    "jax>=0.5.0",
+    "jwave @ git+https://github.com/ucl-bug/jwave.git",
+    "jaxdf @ git+https://github.com/ucl-bug/jaxdf.git",
     "equinox>=0.11.0",
     "optax>=0.2.0",
     "numpy>=1.26.0",
@@ -27,7 +27,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda = ["jax[cuda12]>=0.4.30"]
+cuda12 = ["jax[cuda12]>=0.5.0"]
+cuda13 = ["jax[cuda13]>=0.5.0"]
 dev = ["pytest>=8.0", "pytest-xdist"]
 
 [tool.hatch.build.targets.wheel]

@@ -17,10 +17,10 @@ echo "=============================================="
 echo "  Brain USCT — DGX Spark Runner"
 echo "=============================================="
 
-# Install deps with CUDA support
-echo "[1/4] Installing dependencies (with CUDA)..."
+# Install deps with CUDA 13 support (DGX Spark GB10)
+echo "[1/4] Installing dependencies (with CUDA 13)..."
 uv sync --quiet
-uv pip install --quiet "jax[cuda12]>=0.4.30"
+uv pip install --quiet "jax[cuda13]>=0.5"
 
 # Verify GPU
 echo "[2/4] Checking GPU..."
