@@ -254,7 +254,14 @@ def run_mida_256():
         t_sim = time.time() - t0
 
         print(f"  Simulation: {t_sim:.1f}s")
-        print(f"  p_max: {float(jnp.max(jnp.abs(p_field))):.6f}")
+        # Extract raw array from FourierSeries if needed
+        if hasattr(p_field, 'on_grid'):
+            p_arr = p_field.on_grid
+            if p_arr.shape[-1] == 1:
+                p_arr = p_arr[..., 0]
+        else:
+            p_arr = jnp.asarray(p_field)
+        print(f"  p_max: {float(jnp.max(jnp.abs(p_arr))):.6f}")
 
         all_results["forward_3d"] = {
             "grid_shape": list(grid_shape),
@@ -336,7 +343,7 @@ def run_mida_256():
 
         print(f"  FWI time: {t_fwi:.1f}s")
         print(f"  Final loss: {result.loss_history[-1]:.6f}")
-        c_rec = np.array(result.c_reconstructed)
+        c_rec = np.array(result.velocity)
         print(f"  Recon c: [{c_rec.min():.0f}, {c_rec.max():.0f}] m/s")
 
         all_results["fwi"] = {
