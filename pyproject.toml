@@ -31,6 +31,9 @@ cuda12 = ["jax[cuda12]>=0.5.0"]
 cuda13 = ["jax[cuda13]>=0.5.0"]
 dev = ["pytest>=8.0", "pytest-xdist"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/brain_fwi"]
 
