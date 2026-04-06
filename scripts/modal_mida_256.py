@@ -48,7 +48,7 @@ mida_vol = modal.Volume.from_name("mida-data", create_if_missing=True)
 
 
 # Install brain-fwi source into the image directly
-image = image.copy_local_dir(
+image = image.add_local_dir(
     "/Users/mhough/dev/brain-fwi/src",
     remote_path="/opt/brain-fwi-src",
 )
