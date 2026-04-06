@@ -16,6 +16,9 @@ from pathlib import Path
 import os
 # Request GPU before importing JAX
 os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu")
+# DGX Spark (GB10) uses unified memory — don't preallocate
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.8")
 
 import jax
 import jax.numpy as jnp

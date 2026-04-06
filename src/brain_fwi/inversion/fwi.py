@@ -366,30 +366,34 @@ def run_fwi(
                 )
             shot_indices = np.array(shot_indices)
 
-            # Compute loss and gradient.
-            # time_axis is pre-computed outside to avoid float() on traced arrays.
-            def loss_for_grad(p):
-                velocity = _params_to_velocity(p, config.c_min, config.c_max)
-                domain = build_domain(grid_shape, dx)
-                medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
+            # Compute loss and gradient, one shot at a time to save memory.
+            # Accumulate gradients across shots (equivalent to batched but
+            # uses O(1 shot) memory instead of O(n_shots)).
+            total_loss = 0.0
+            grad_accum = jnp.zeros_like(params)
 
-                total_loss = 0.0
-                for si in shot_indices:
-                    src_pos = src_positions_grid[int(si)]
+            for si in shot_indices:
+                src_pos = src_positions_grid[int(si)]
+                obs = bp_observed[int(si)]
+
+                def single_shot_loss(p, _src_pos=src_pos, _obs=obs):
+                    velocity = _params_to_velocity(p, config.c_min, config.c_max)
+                    domain = build_domain(grid_shape, dx)
+                    medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
                     pred = simulate_shot_sensors(
-                        medium, fixed_time_axis, src_pos, sensor_positions_grid,
+                        medium, fixed_time_axis, _src_pos, sensor_positions_grid,
                         bp_signal, dt,
                     )
-                    obs = bp_observed[int(si)]
+                    min_t = min(pred.shape[0], _obs.shape[0])
+                    return loss_fn(pred[:min_t], _obs[:min_t])
 
-                    # Truncate to matching length
-                    min_t = min(pred.shape[0], obs.shape[0])
-                    total_loss = total_loss + loss_fn(pred[:min_t], obs[:min_t])
+                shot_loss, shot_grad = jax.value_and_grad(single_shot_loss)(params)
+                total_loss = total_loss + float(shot_loss)
+                grad_accum = grad_accum + shot_grad
 
-                return total_loss / len(shot_indices)
-
-            loss_val, grad = jax.value_and_grad(loss_for_grad)(params)
-            loss_history.append(float(loss_val))
+            loss_val = total_loss / len(shot_indices)
+            grad = grad_accum / len(shot_indices)
+            loss_history.append(loss_val)
 
             # Process gradient
             if config.gradient_smooth_sigma > 0:
