@@ -217,32 +217,29 @@ def run_extended_fwi():
     print("STEP 5: Radiation Force → Displacement → ARFI")
     print("=" * 70)
 
-    # Take axial slice through the reconstruction
+    # ARFI on 2D slice to avoid 3D OOM (96^3 time-series = 113GB)
     mid_z = N // 2
     c_slice = c_rec[:, :, mid_z]
     rho_slice = np.array(rho)[:, :, mid_z]
     labels_slice = labels[:, :, mid_z]
 
-    # Simulate acoustic field using reconstructed velocity
-    from brain_fwi.simulation.forward import simulate_shot
-    medium_rec = build_medium(
-        build_domain((N,N,N), dx),
-        jnp.array(c_rec, dtype=jnp.float32),
-        jnp.array(rho, dtype=jnp.float32),
-        pml_size=10,
-    )
-    ta_rec = build_time_axis(medium_rec, cfl=0.3, t_end=5e-5)
-    p_field = simulate_shot(medium_rec, ta_rec, src_list[0], 500e3)
+    # Run 2D simulation on the axial slice for ARFI
+    import importlib.util as ilu
+    jwa_spec = ilu.spec_from_file_location("jwa", f"{BP}/jwave_adapter.py")
+    jwa = ilu.module_from_spec(jwa_spec)
+    jwa_spec.loader.exec_module(jwa)
 
-    # Extract pressure slice
-    if hasattr(p_field, 'on_grid'):
-        p_arr = np.array(p_field.on_grid)
-        if p_arr.ndim == 4 and p_arr.shape[-1] == 1:
-            p_arr = p_arr[..., 0]
-    else:
-        p_arr = np.array(p_field)
-
-    p_slice = p_arr[:, :, mid_z] if p_arr.ndim == 3 else p_arr
+    from jwave.geometry import TimeAxis as TA
+    domain_2d = jwa.create_domain(c_slice.shape, dx)
+    med_2d = jwa.create_medium(domain_2d, jnp.array(c_slice, dtype=jnp.float32),
+                                jnp.array(rho_slice, dtype=jnp.float32), pml_size=8)
+    ta_2d = TA.from_medium(med_2d, cfl=0.3, t_end=5e-5)
+    dt_2d = float(ta_2d.dt)
+    src_2d = (N//2, 5)
+    pos_2d = jnp.array([[src_2d[0]*dx, src_2d[1]*dx]])
+    sources_2d = jwa.create_sources(domain_2d, pos_2d, 500e3, jnp.zeros(1), jnp.ones(1), dt=dt_2d, n_cycles=5)
+    p_2d = jwa.run_simulation_jax(med_2d, src_2d, 500e3, 5e-5, time_axis=ta_2d, sources=sources_2d)
+    p_slice = np.array(p_2d)
 
     # Intensity
     Z = rho_slice * c_slice
