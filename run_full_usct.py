@@ -1,0 +1,417 @@
+#!/usr/bin/env python
+"""Full-scale brain USCT simulation with complete results output.
+
+Single script that runs the entire pipeline and produces:
+  1. HDF5 with all volumes, metrics, and helmet geometry
+  2. Multi-panel comparison figure
+  3. Printed summary table
+
+Designed for DGX Spark / A100 GPU execution.
+"""
+
+import argparse
+import time
+from pathlib import Path
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+jax.config.update("jax_enable_x64", False)
+
+from brain_fwi.phantoms.properties import map_labels_to_all
+from brain_fwi.transducers.helmet import helmet_array_3d, transducer_positions_to_grid
+from brain_fwi.simulation.forward import (
+    build_domain, build_medium, build_time_axis,
+    simulate_shot_sensors, _build_source_signal,
+)
+from brain_fwi.inversion.fwi import FWIConfig, run_fwi
+
+
+def create_head_phantom(grid_shape, dx):
+    """Anatomical 3D head: scalp, skull, CSF, GM, WM, ventricles, lesion."""
+    nx, ny, nz = grid_shape
+    cx, cy, cz = nx // 2, ny // 2, nz // 2
+
+    head_a = min(0.095 / dx, cx - 3)
+    head_b = min(0.075 / dx, cy - 3)
+    head_c = min(0.090 / dx, cz - 3)
+
+    x, y, z = jnp.meshgrid(
+        jnp.arange(nx), jnp.arange(ny), jnp.arange(nz), indexing="ij"
+    )
+    r = jnp.sqrt(
+        ((x - cx) / head_a) ** 2 +
+        ((y - cy) / head_b) ** 2 +
+        ((z - cz) / head_c) ** 2
+    )
+
+    scalp_t = 0.003 / (head_a * dx)
+    skull_t = 0.007 / (head_a * dx)
+    csf_t = 0.002 / (head_a * dx)
+    cortex_t = 0.004 / (head_a * dx)
+
+    r_scalp = 1.0
+    r_skull_o = r_scalp - scalp_t
+    r_skull_i = r_skull_o - skull_t
+    r_csf_i = r_skull_i - csf_t
+    r_cortex_i = r_csf_i - cortex_t
+
+    labels = jnp.zeros(grid_shape, dtype=jnp.int32)
+    labels = jnp.where(r <= r_scalp, 6, labels)
+    labels = jnp.where(r <= r_skull_o, 7, labels)
+    labels = jnp.where(r <= r_skull_i, 1, labels)
+    labels = jnp.where(r <= r_csf_i, 2, labels)
+    labels = jnp.where(r <= r_cortex_i, 3, labels)
+
+    # Lateral ventricles
+    for y_off in [-0.015 / dx, 0.015 / dx]:
+        vr = jnp.sqrt(
+            ((x - cx) / (0.010 / dx)) ** 2 +
+            ((y - cy - y_off) / (0.008 / dx)) ** 2 +
+            ((z - cz + 0.005 / dx) / (0.025 / dx)) ** 2
+        )
+        labels = jnp.where((vr <= 1.0) & (r <= r_cortex_i), 1, labels)
+
+    # Simulated haemorrhage (1cm diameter, label 8 = blood)
+    lr = jnp.sqrt(
+        ((x - cx + 0.02 / dx) / (0.005 / dx)) ** 2 +
+        ((y - cy + 0.01 / dx) / (0.005 / dx)) ** 2 +
+        ((z - cz) / (0.005 / dx)) ** 2
+    )
+    labels = jnp.where((lr <= 1.0) & (r <= r_cortex_i), 8, labels)
+
+    props = map_labels_to_all(labels)
+    c = jnp.where(labels == 0, 1500.0, props["sound_speed"])
+    rho = jnp.where(labels == 0, 1000.0, props["density"])
+
+    return labels, c, rho
+
+
+def create_helmet(n_elements, grid_shape, dx):
+    """Kernel Flow-inspired probe helmet."""
+    cx_m = grid_shape[0] * dx / 2
+    cy_m = grid_shape[1] * dx / 2
+    cz_m = grid_shape[2] * dx / 2
+
+    r_ap = min(0.095, (grid_shape[0] * dx / 2) - 5 * dx)
+    r_lr = min(0.075, (grid_shape[1] * dx / 2) - 5 * dx)
+    r_si = min(0.090, (grid_shape[2] * dx / 2) - 5 * dx)
+
+    positions = helmet_array_3d(
+        n_elements=n_elements,
+        center=(cx_m, cy_m, cz_m),
+        radius_ap=r_ap, radius_lr=r_lr, radius_si=r_si,
+        standoff=0.005, coverage_angle=2.8, exclude_face=True,
+    )
+    pos_grid = transducer_positions_to_grid(positions, dx, grid_shape)
+    n = len(pos_grid[0])
+    src_list = [(int(pos_grid[0][i]), int(pos_grid[1][i]), int(pos_grid[2][i]))
+                for i in range(n)]
+    return positions, pos_grid, src_list, n
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Full Brain USCT")
+    parser.add_argument("--grid-size", type=int, default=96)
+    parser.add_argument("--n-elements", type=int, default=128)
+    parser.add_argument("--dx", type=float, default=0.002)
+    parser.add_argument("--iters", type=int, default=15)
+    parser.add_argument("--shots", type=int, default=8)
+    parser.add_argument("--output", type=str, default="brain_usct_results.h5")
+    parser.add_argument("--figures", type=str, default="brain_usct_figures.png")
+    args = parser.parse_args()
+
+    N = args.grid_size
+    grid_shape = (N, N, N)
+    dx = args.dx
+    domain_cm = N * dx * 100
+    t_total_start = time.time()
+
+    print("=" * 70)
+    print("  Transcranial Ultrasound Computed Tomography")
+    print("  Full Waveform Inversion — Brain Sound Speed Recovery")
+    print("=" * 70)
+    print(f"  Device:      {jax.devices()[0]}")
+    print(f"  Backend:     {jax.default_backend()}")
+    print(f"  Grid:        {N}^3 = {N**3:,} voxels")
+    print(f"  Spacing:     {dx*1e3:.1f} mm")
+    print(f"  Domain:      {domain_cm:.1f} cm^3")
+    print(f"  Elements:    {args.n_elements}")
+    print(f"  FWI iters:   {args.iters}/band")
+    print(f"  Shots/iter:  {args.shots}")
+
+    # ---- Phantom ----
+    print(f"\n{'='*70}")
+    print("  STEP 1: Head Phantom")
+    print(f"{'='*70}")
+    t0 = time.time()
+    labels, c_true, rho = create_head_phantom(grid_shape, dx)
+
+    tissue_counts = {
+        "Water (coupling)": int(jnp.sum(labels == 0)),
+        "CSF + ventricles": int(jnp.sum(labels == 1)),
+        "Grey matter": int(jnp.sum(labels == 2)),
+        "White matter": int(jnp.sum(labels == 3)),
+        "Scalp": int(jnp.sum(labels == 6)),
+        "Skull": int(jnp.sum(labels == 7)),
+        "Lesion (haemorrhage)": int(jnp.sum(labels == 8)),
+    }
+    for tissue, count in tissue_counts.items():
+        if count > 0:
+            print(f"  {tissue:25s}: {count:>8,} voxels")
+    print(f"  Speed range: [{float(jnp.min(c_true)):.0f}, {float(jnp.max(c_true)):.0f}] m/s")
+    print(f"  Time: {time.time()-t0:.1f} s")
+
+    # ---- Helmet ----
+    print(f"\n{'='*70}")
+    print("  STEP 2: Probe Helmet")
+    print(f"{'='*70}")
+    t0 = time.time()
+    positions_m, pos_grid, src_list, n_actual = create_helmet(
+        args.n_elements, grid_shape, dx
+    )
+    print(f"  Elements placed: {n_actual}")
+    print(f"  Coverage: ~160 deg (face excluded)")
+    print(f"  Standoff: 5 mm water coupling")
+    print(f"  Time: {time.time()-t0:.1f} s")
+
+    # ---- Forward data ----
+    print(f"\n{'='*70}")
+    print("  STEP 3: Forward Data Generation")
+    print(f"{'='*70}")
+    t0 = time.time()
+
+    c_max_fwi = 3200.0
+    # Frequency bands
+    if N >= 192:
+        freq_bands = [(50e3, 100e3), (100e3, 200e3), (200e3, 300e3)]
+    elif N >= 96:
+        freq_bands = [(40e3, 80e3), (80e3, 150e3)]
+    else:
+        freq_bands = [(30e3, 60e3)]
+
+    max_freq = max(f for _, f in freq_bands)
+    wl = 1500.0 / max_freq
+    ppw = wl / dx
+
+    print(f"  Frequency bands: {len(freq_bands)}")
+    for i, (fmin, fmax) in enumerate(freq_bands):
+        print(f"    Band {i+1}: {fmin/1e3:.0f} – {fmax/1e3:.0f} kHz")
+    print(f"  Min wavelength: {wl*1e3:.1f} mm ({ppw:.0f} PPW)")
+
+    # Reference time axis from c_max (used for everything)
+    domain = build_domain(grid_shape, dx)
+    ref_medium = build_medium(domain, c_max_fwi, 1000.0, pml_size=10)
+    time_axis = build_time_axis(ref_medium, cfl=0.3)
+    dt = float(time_axis.dt)
+    t_end = float(time_axis.t_end)
+    n_samples = int(t_end / dt)
+
+    print(f"  dt = {dt*1e6:.3f} us, t_end = {t_end*1e3:.2f} ms, {n_samples} steps")
+
+    source_signal = _build_source_signal(max_freq, dt, n_samples)
+
+    # Generate observed data with true medium
+    medium_true = build_medium(domain, c_true, rho, pml_size=10)
+    n_data_src = min(n_actual, args.shots * len(freq_bands) * 3)
+
+    print(f"  Simulating {n_data_src} shots...")
+    observed = []
+    for i in range(n_data_src):
+        if (i + 1) % max(1, n_data_src // 20) == 0:
+            elapsed = time.time() - t0
+            rate = (i + 1) / elapsed
+            eta = (n_data_src - i - 1) / rate
+            print(f"    Shot {i+1}/{n_data_src} ({rate:.1f} shots/s, ETA {eta:.0f}s)")
+        d = simulate_shot_sensors(
+            medium_true, time_axis, src_list[i], pos_grid, source_signal, dt
+        )
+        observed.append(d)
+    observed = jnp.stack(observed, axis=0)
+
+    data_time = time.time() - t0
+    print(f"  Observed data: {observed.shape}")
+    print(f"  Time: {data_time:.1f} s ({n_data_src/data_time:.2f} shots/s)")
+
+    # ---- FWI ----
+    print(f"\n{'='*70}")
+    print("  STEP 4: Full Waveform Inversion")
+    print(f"{'='*70}")
+    t0 = time.time()
+
+    c_init = jnp.full(grid_shape, 1500.0, dtype=jnp.float32)
+
+    config = FWIConfig(
+        freq_bands=freq_bands,
+        n_iters_per_band=args.iters,
+        shots_per_iter=args.shots,
+        learning_rate=0.5,
+        c_min=1400.0,
+        c_max=c_max_fwi,
+        pml_size=10,
+        gradient_smooth_sigma=3.0,
+        loss_fn="l2",
+        skip_bandpass=True,
+        verbose=True,
+    )
+
+    result = run_fwi(
+        observed_data=observed,
+        initial_velocity=c_init,
+        density=rho,
+        dx=dx,
+        src_positions_grid=src_list[:n_data_src],
+        sensor_positions_grid=pos_grid,
+        source_signal=source_signal,
+        dt=dt,
+        t_end=t_end,
+        config=config,
+    )
+
+    fwi_time = time.time() - t0
+
+    # ---- Results ----
+    print(f"\n{'='*70}")
+    print("  RESULTS")
+    print(f"{'='*70}")
+
+    c_recon = result.velocity
+
+    masks = {
+        "Head (all tissue)": labels > 0,
+        "Brain (GM + WM)": (labels == 2) | (labels == 3),
+        "Grey matter": labels == 2,
+        "White matter": labels == 3,
+        "CSF": labels == 1,
+        "Skull": labels == 7,
+        "Scalp": labels == 6,
+    }
+
+    if int(jnp.sum(labels == 8)) > 0:
+        masks["Lesion"] = labels == 8
+
+    print(f"\n  {'Region':25s} | {'True c':>8s} | {'Recon c':>8s} | {'RMSE':>8s} | {'Improve':>8s}")
+    print(f"  {'-'*25}-+-{'-'*8}-+-{'-'*8}-+-{'-'*8}-+-{'-'*8}")
+
+    metrics = {}
+    for name, mask in masks.items():
+        n_vox = float(jnp.sum(mask))
+        if n_vox < 1:
+            continue
+        c_true_mean = float(jnp.sum(c_true * mask) / n_vox)
+        c_recon_mean = float(jnp.sum(c_recon * mask) / n_vox)
+        rmse = float(jnp.sqrt(jnp.sum((c_recon - c_true) ** 2 * mask) / n_vox))
+        rmse_init = float(jnp.sqrt(jnp.sum((c_init - c_true) ** 2 * mask) / n_vox))
+        improve = (1 - rmse / rmse_init) * 100 if rmse_init > 0 else 0
+
+        metrics[name] = {
+            "c_true": c_true_mean, "c_recon": c_recon_mean,
+            "rmse": rmse, "rmse_init": rmse_init, "improvement": improve,
+        }
+        print(f"  {name:25s} | {c_true_mean:8.1f} | {c_recon_mean:8.1f} | {rmse:8.1f} | {improve:+7.1f}%")
+
+    total_time = time.time() - t_total_start
+    print(f"\n  Timing:")
+    print(f"    Data generation: {data_time:.1f} s")
+    print(f"    FWI inversion:   {fwi_time:.1f} s")
+    print(f"    Total:           {total_time:.1f} s ({total_time/60:.1f} min)")
+    print(f"  Final loss: {result.loss_history[-1]:.8f}")
+
+    # ---- Save HDF5 ----
+    print(f"\n  Saving to {args.output}...")
+    import h5py
+    with h5py.File(args.output, "w") as f:
+        f.create_dataset("velocity_true", data=np.array(c_true), compression="gzip")
+        f.create_dataset("velocity_recon", data=np.array(c_recon), compression="gzip")
+        f.create_dataset("velocity_init", data=np.array(c_init), compression="gzip")
+        f.create_dataset("density", data=np.array(rho), compression="gzip")
+        f.create_dataset("labels", data=np.array(labels), compression="gzip")
+        f.create_dataset("helmet_positions", data=np.array(positions_m))
+        f.create_dataset("loss_history", data=np.array(result.loss_history))
+        for i, v in enumerate(result.velocity_history):
+            f.create_dataset(f"velocity_band_{i}", data=np.array(v), compression="gzip")
+
+        f.attrs["grid_shape"] = list(grid_shape)
+        f.attrs["dx_m"] = dx
+        f.attrs["n_elements"] = n_actual
+        f.attrs["n_data_sources"] = n_data_src
+        f.attrs["freq_bands_hz"] = str(freq_bands)
+        f.attrs["n_iters_per_band"] = args.iters
+        f.attrs["shots_per_iter"] = args.shots
+        f.attrs["learning_rate"] = config.learning_rate
+        f.attrs["data_gen_time_s"] = data_time
+        f.attrs["fwi_time_s"] = fwi_time
+        f.attrs["total_time_s"] = total_time
+        f.attrs["device"] = str(jax.devices()[0])
+        f.attrs["jax_backend"] = jax.default_backend()
+
+        for name, m in metrics.items():
+            for k, v in m.items():
+                f.attrs[f"metric_{name}_{k}"] = v
+
+    print(f"  Saved ({Path(args.output).stat().st_size / 1e6:.1f} MB)")
+
+    # ---- Figures ----
+    print(f"  Generating figures...")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    mid = N // 2
+    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
+
+    slices = [
+        ("Axial (z={})".format(mid), c_true[:, :, mid], c_recon[:, :, mid], labels[:, :, mid]),
+        ("Coronal (y={})".format(mid), c_true[:, mid, :], c_recon[:, mid, :], labels[:, mid, :]),
+        ("Sagittal (x={})".format(mid), c_true[mid, :, :], c_recon[mid, :, :], labels[mid, :, :]),
+    ]
+
+    for row, (title, c_t, c_r, lab) in enumerate(slices):
+        c_t, c_r, lab = np.array(c_t), np.array(c_r), np.array(lab)
+        diff = c_r - c_t
+        ext = [0, N * dx * 100, 0, N * dx * 100]
+
+        im0 = axes[row, 0].imshow(c_t.T, cmap="seismic", vmin=1400, vmax=3200,
+                                   origin="lower", extent=ext)
+        axes[row, 0].set_title(f"True — {title}")
+
+        im1 = axes[row, 1].imshow(c_r.T, cmap="seismic", vmin=1400, vmax=3200,
+                                   origin="lower", extent=ext)
+        axes[row, 1].set_title(f"Recon — {title}")
+
+        im2 = axes[row, 2].imshow(diff.T, cmap="RdBu_r", vmin=-200, vmax=200,
+                                   origin="lower", extent=ext)
+        axes[row, 2].set_title(f"Error — {title}")
+
+        im3 = axes[row, 3].imshow(lab.T, cmap="tab10", vmin=0, vmax=10,
+                                   origin="lower", extent=ext)
+        axes[row, 3].set_title(f"Labels — {title}")
+
+        for ax in axes[row, :]:
+            ax.set_xlabel("cm")
+            ax.set_ylabel("cm")
+
+    plt.colorbar(im0, ax=axes[0, 0], label="m/s", shrink=0.8)
+    plt.colorbar(im1, ax=axes[0, 1], label="m/s", shrink=0.8)
+    plt.colorbar(im2, ax=axes[0, 2], label="m/s", shrink=0.8)
+
+    brain_rmse = metrics.get("Brain (GM + WM)", {}).get("rmse", 0)
+    skull_rmse = metrics.get("Skull", {}).get("rmse", 0)
+    plt.suptitle(
+        f"Brain USCT — {N}^3 grid, {n_actual} elements, dx={dx*1e3:.1f}mm\n"
+        f"Brain RMSE: {brain_rmse:.1f} m/s | Skull RMSE: {skull_rmse:.1f} m/s | "
+        f"Time: {total_time/60:.1f} min on {jax.default_backend().upper()}",
+        fontsize=14, fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.savefig(args.figures, dpi=150, bbox_inches="tight")
+    print(f"  Saved {args.figures}")
+
+    print(f"\n{'='*70}")
+    print(f"  COMPLETE — {total_time/60:.1f} min total")
+    print(f"{'='*70}")
+
+
+if __name__ == "__main__":
+    main()
