@@ -249,13 +249,12 @@ def run_mida_256():
         print(f"  Grid: {grid_shape}, dx={dx*1e3}mm")
 
         t0 = time.time()
-        # Simulate single shot
-        from brain_fwi.simulation.forward import simulate_shot_full_field
-        p_field = simulate_shot_full_field(medium, ta, src_idx, 500e3, n_cycles=5)
+        from brain_fwi.simulation.forward import simulate_shot
+        p_field = simulate_shot(medium, ta, src_idx, 500e3)
         t_sim = time.time() - t0
 
         print(f"  Simulation: {t_sim:.1f}s")
-        print(f"  p_max: {float(jnp.max(p_field)):.6f}")
+        print(f"  p_max: {float(jnp.max(jnp.abs(p_field))):.6f}")
 
         all_results["forward_3d"] = {
             "grid_shape": list(grid_shape),
@@ -280,6 +279,11 @@ def run_mida_256():
 
     try:
         from brain_fwi.inversion.fwi import FWIConfig, run_fwi
+        from brain_fwi.simulation.forward import (
+            build_domain as bd, build_medium as bm, build_time_axis as bta,
+            generate_observed_data, _build_source_signal,
+        )
+        from brain_fwi.transducers import transducer_positions_to_grid
 
         config = FWIConfig(
             freq_bands=[(400e3, 600e3)],
@@ -288,16 +292,44 @@ def run_mida_256():
             learning_rate=0.5,
             c_min=1400.0,
             c_max=3500.0,
-            gradient_smooth_sigma=2.0,
         )
 
+        # Convert positions to grid indices
+        src_grid = transducer_positions_to_grid(positions[:4], dx, grid_shape)
+        sen_grid = transducer_positions_to_grid(positions[4:20], dx, grid_shape)
+
+        # Generate synthetic observed data
+        print("  Generating observed data (4 shots)...")
+        t0 = time.time()
+        obs_data = generate_observed_data(
+            jnp.array(c), jnp.array(rho), dx,
+            src_positions_grid=[tuple(int(src_grid[d][i]) for d in range(3)) for i in range(4)],
+            sensor_positions_grid=sen_grid,
+            freq=500e3, t_end=5e-5,
+        )
+        print(f"  Observed data: {obs_data.shape}, generated in {time.time()-t0:.1f}s")
+
+        # Build source signal for FWI
+        from brain_fwi.utils.wavelets import ricker_wavelet
+        ta_fwi = bta(bm(bd(grid_shape, dx), jnp.array(c), jnp.array(rho), pml_size=10),
+                      cfl=0.3, t_end=5e-5)
+        dt_fwi = float(ta_fwi.dt)
+        n_t = int(5e-5 / dt_fwi)
+        source_sig = ricker_wavelet(500e3, dt_fwi, n_t)
+
+        # Run FWI
+        print("  Running FWI (5 iterations)...")
         t0 = time.time()
         result = run_fwi(
-            c_true=jnp.array(c),
-            rho=jnp.array(rho),
+            observed_data=obs_data,
+            initial_velocity=jnp.ones(grid_shape) * 1500.0,
+            density=jnp.array(rho),
             dx=dx,
-            source_positions=positions[:4],  # use 4 sources for speed
-            sensor_positions=positions[4:20],  # 16 sensors
+            src_positions_grid=[tuple(int(src_grid[d][i]) for d in range(3)) for i in range(4)],
+            sensor_positions_grid=sen_grid,
+            source_signal=source_sig,
+            dt=dt_fwi,
+            t_end=5e-5,
             config=config,
         )
         t_fwi = time.time() - t0
