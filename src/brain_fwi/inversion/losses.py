@@ -17,9 +17,10 @@ import jax.numpy as jnp
 def l2_loss(predicted: jnp.ndarray, observed: jnp.ndarray) -> jnp.ndarray:
     """L2 waveform misfit.
 
-    f = 0.5 * sum((predicted - observed)^2) / sum(observed^2)
+    f = 0.5 * sum((predicted - observed)^2)
 
-    Normalized by observed energy for scale-invariance across frequencies.
+    Unnormalized L2 — avoids instability when bandpass filtering
+    reduces observed energy unevenly between predicted and observed.
 
     Args:
         predicted: (n_timesteps, n_sensors) or (n_sensors,) simulated data.
@@ -29,8 +30,7 @@ def l2_loss(predicted: jnp.ndarray, observed: jnp.ndarray) -> jnp.ndarray:
         Scalar loss value.
     """
     residual = predicted - observed
-    energy = jnp.sum(observed ** 2) + 1e-30
-    return 0.5 * jnp.sum(residual ** 2) / energy
+    return 0.5 * jnp.mean(residual ** 2)
 
 
 def envelope_loss(predicted: jnp.ndarray, observed: jnp.ndarray) -> jnp.ndarray:

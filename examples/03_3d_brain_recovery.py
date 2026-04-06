@@ -351,13 +351,13 @@ def main():
         freq_bands=freq_bands,
         n_iters_per_band=iters,
         shots_per_iter=shots,
-        learning_rate=5.0,
+        learning_rate=0.5,
         c_min=1400.0,
         c_max=3200.0,
         pml_size=10,
-        gradient_smooth_sigma=2.0,
-        loss_fn="multiscale",
-        envelope_weight=0.5,
+        gradient_smooth_sigma=3.0,
+        loss_fn="l2",
+        skip_bandpass=True,
         verbose=True,
     )
 

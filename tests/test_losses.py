@@ -22,14 +22,11 @@ class TestL2Loss:
         loss = l2_loss(x, y)
         assert float(loss) > 0
 
-    def test_normalized_by_observed_energy(self):
-        """L2 is normalized by observed energy (not symmetric by design)."""
+    def test_symmetric(self):
+        """Unnormalized L2 should be symmetric."""
         x = jnp.array([1.0, 2.0, 3.0])
         y = jnp.array([1.1, 2.2, 3.3])
-        # l2_loss(a, b) = 0.5 * sum((a-b)^2) / sum(b^2)
-        residual = x - y
-        expected = 0.5 * float(jnp.sum(residual**2)) / float(jnp.sum(y**2))
-        assert float(l2_loss(x, y)) == pytest.approx(expected, rel=1e-4)
+        assert float(l2_loss(x, y)) == pytest.approx(float(l2_loss(y, x)), rel=1e-5)
 
     def test_2d_input(self):
         """Should work with (n_timesteps, n_sensors) arrays."""
