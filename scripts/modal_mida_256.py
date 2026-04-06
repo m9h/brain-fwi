@@ -47,8 +47,16 @@ image = (
 mida_vol = modal.Volume.from_name("mida-data", create_if_missing=True)
 
 
+# Mount the local brain-fwi source code into the container
+brain_fwi_mount = modal.Mount.from_local_dir(
+    "/Users/mhough/dev/brain-fwi/src",
+    remote_path="/opt/brain-fwi-src",
+)
+
+
 @app.function(image=image, gpu="A100", timeout=3600, memory=32768,
-              volumes={"/mida": mida_vol})
+              volumes={"/mida": mida_vol},
+              mounts=[brain_fwi_mount])
 def run_mida_256():
     import time
     import numpy as np
@@ -56,10 +64,11 @@ def run_mida_256():
     import jax.numpy as jnp
     import sys, os, glob
 
-    # Add brain-fwi to path (either from clone or mounted)
-    for p in ["/opt/brain-fwi/src", "/root/brain-fwi/src"]:
+    # Add brain-fwi to path (mounted local source)
+    for p in ["/opt/brain-fwi-src", "/opt/brain-fwi/src"]:
         if os.path.exists(p):
             sys.path.insert(0, p)
+            print(f"  Added to path: {p}")
 
     print(f"JAX: {jax.__version__}, devices: {jax.devices()}")
     print()
