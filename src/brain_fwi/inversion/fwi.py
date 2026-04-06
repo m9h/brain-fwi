@@ -85,6 +85,7 @@ class FWIConfig:
     loss_fn: str = "multiscale"
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
+    skip_bandpass: bool = False
     verbose: bool = True
 
 
@@ -234,25 +235,29 @@ def _get_loss_fn(name: str, envelope_weight: float) -> Callable:
 
 
 def _bandpass_signal(signal: jnp.ndarray, dt: float, fmin: float, fmax: float) -> jnp.ndarray:
-    """Apply a bandpass filter to a source signal via FFT."""
+    """Apply a bandpass filter to a source signal via FFT.
+
+    Uses smooth cosine tapers at band edges to avoid Gibbs ringing.
+    """
     n = signal.shape[0]
     freqs = jnp.fft.fftfreq(n, d=dt)
     S = jnp.fft.fft(signal)
 
-    # Cosine taper bandpass
     f_abs = jnp.abs(freqs)
-    mask = jnp.where(
-        (f_abs >= fmin) & (f_abs <= fmax),
-        1.0,
-        0.0,
-    )
-    # Smooth edges with cosine taper
-    taper_width = (fmax - fmin) * 0.1
-    low_taper = 0.5 * (1 + jnp.cos(jnp.pi * jnp.clip((fmin - f_abs) / (taper_width + 1e-30), 0, 1)))
-    high_taper = 0.5 * (1 + jnp.cos(jnp.pi * jnp.clip((f_abs - fmax) / (taper_width + 1e-30), 0, 1)))
-    mask = mask * low_taper * high_taper
+    taper_width = (fmax - fmin) * 0.2
 
-    return jnp.real(jnp.fft.ifft(S * mask))
+    # Low-frequency taper: 0 below (fmin - taper), rises to 1 at fmin
+    low_taper = 0.5 * (1.0 + jnp.cos(jnp.pi * jnp.clip(
+        (fmin - f_abs) / (taper_width + 1e-30), 0.0, 1.0)))
+
+    # High-frequency taper: 1 at fmax, drops to 0 above (fmax + taper)
+    high_taper = 0.5 * (1.0 + jnp.cos(jnp.pi * jnp.clip(
+        (f_abs - fmax) / (taper_width + 1e-30), 0.0, 1.0)))
+
+    # Product forms a smooth bandpass — no hard mask needed
+    bandpass = low_taper * high_taper
+
+    return jnp.real(jnp.fft.ifft(S * bandpass))
 
 
 def run_fwi(
@@ -339,13 +344,15 @@ def run_fwi(
             print(f"\n  Band {band_idx+1}/{len(config.freq_bands)}: "
                   f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz")
 
-        # Bandpass the source signal for this frequency band
-        bp_signal = _bandpass_signal(source_signal, dt, fmin, fmax)
-
-        # Also bandpass the observed data
-        bp_observed = jax.vmap(
-            lambda d: jax.vmap(lambda col: _bandpass_signal(col, dt, fmin, fmax))(d.T).T
-        )(observed_data)
+        # Bandpass the source signal and observed data for this frequency band
+        if config.skip_bandpass:
+            bp_signal = source_signal
+            bp_observed = observed_data
+        else:
+            bp_signal = _bandpass_signal(source_signal, dt, fmin, fmax)
+            bp_observed = jax.vmap(
+                lambda d: jax.vmap(lambda col: _bandpass_signal(col, dt, fmin, fmax))(d.T).T
+            )(observed_data)
 
         for it in range(config.n_iters_per_band):
             key, subkey = jr.split(key)
