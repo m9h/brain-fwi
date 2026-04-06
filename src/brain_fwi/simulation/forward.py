@@ -317,12 +317,20 @@ def generate_observed_data(
     pml_size: int = 20,
     cfl: float = 0.3,
     t_end: Optional[float] = None,
+    time_axis=None,
+    source_signal: Optional[jnp.ndarray] = None,
+    dt: Optional[float] = None,
     verbose: bool = True,
 ) -> jnp.ndarray:
     """Generate synthetic observed data for all source-receiver pairs.
 
     Runs one forward simulation per source, records at all sensors.
     This is used to create the 'ground truth' data for FWI.
+
+    IMPORTANT: For consistency with FWI, pass the same time_axis,
+    source_signal, and dt that will be used during inversion. If not
+    provided, they are computed from the medium (which may produce
+    a different dt than the FWI uses).
 
     Args:
         sound_speed: (*spatial_dims) sound speed array (m/s).
@@ -334,6 +342,9 @@ def generate_observed_data(
         pml_size: PML thickness.
         cfl: CFL number.
         t_end: Simulation end time. None = auto.
+        time_axis: Pre-computed TimeAxis. None = compute from medium.
+        source_signal: Pre-computed source wavelet. None = build Ricker.
+        dt: Time step matching source_signal. Required if source_signal given.
         verbose: Print progress.
 
     Returns:
@@ -342,11 +353,16 @@ def generate_observed_data(
     grid_shape = sound_speed.shape
     domain = build_domain(grid_shape, dx)
     medium = build_medium(domain, sound_speed, density, pml_size=pml_size)
-    time_axis = build_time_axis(medium, cfl=cfl, t_end=t_end)
 
-    dt = float(time_axis.dt)
-    n_samples = int(float(time_axis.t_end) / dt)
-    source_signal = _build_source_signal(freq, dt, n_samples)
+    if time_axis is None:
+        time_axis = build_time_axis(medium, cfl=cfl, t_end=t_end)
+
+    if dt is None:
+        dt = float(time_axis.dt)
+
+    if source_signal is None:
+        n_samples = int(float(time_axis.t_end) / dt)
+        source_signal = _build_source_signal(freq, dt, n_samples)
 
     n_sources = len(src_positions_grid)
     all_data = []
