@@ -27,6 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cuda = ["jax[cuda12]>=0.4.30"]
 dev = ["pytest>=8.0", "pytest-xdist"]
 
 [tool.hatch.build.targets.wheel]

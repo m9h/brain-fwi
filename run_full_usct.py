@@ -13,11 +13,26 @@ import argparse
 import time
 from pathlib import Path
 
+import os
+# Request GPU before importing JAX
+os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu")
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 jax.config.update("jax_enable_x64", False)
+
+# Fail loud if no GPU
+_backend = jax.default_backend()
+if _backend != "gpu":
+    import warnings
+    warnings.warn(
+        f"JAX backend is '{_backend}', not 'gpu'. "
+        f"Install CUDA support: uv pip install 'jax[cuda12]'\n"
+        f"Falling back to CPU — this will be very slow for 3D.",
+        stacklevel=1,
+    )
 
 from brain_fwi.phantoms.properties import map_labels_to_all
 from brain_fwi.transducers.helmet import helmet_array_3d, transducer_positions_to_grid
