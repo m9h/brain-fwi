@@ -30,6 +30,13 @@ dependencies = [
 cuda12 = ["jax[cuda12]>=0.5.0"]
 cuda13 = ["jax[cuda13]>=0.5.0"]
 dev = ["pytest>=8.0", "pytest-xdist"]
+docs = [
+    "sphinx>=7.0",
+    "furo",
+    "myst-parser>=2.0",
+    "sphinx-copybutton",
+    "sphinx-autodoc-typehints>=2.0",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true

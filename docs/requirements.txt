@@ -1,0 +1,6 @@
+# Sphinx documentation build dependencies
+sphinx>=7.0
+furo
+myst-parser>=2.0
+sphinx-copybutton
+sphinx-autodoc-typehints>=2.0
