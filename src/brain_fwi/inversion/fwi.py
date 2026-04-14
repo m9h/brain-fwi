@@ -29,6 +29,7 @@ import jax.random as jr
 import optax
 import numpy as np
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..simulation.forward import (
@@ -86,6 +87,7 @@ class FWIConfig:
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
     skip_bandpass: bool = False
+    checkpoint_dir: Optional[str] = None  # Save/resume state after each band
     verbose: bool = True
 
 
@@ -132,6 +134,56 @@ def _velocity_to_params(
     normalized = (v_clipped - c_min) / (c_max - c_min)
     # Inverse sigmoid = logit
     return jnp.log(normalized / (1.0 - normalized))
+
+
+# ---------------------------------------------------------------------------
+# Disk checkpointing (resume after preemption)
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(path: Path, band_idx: int, params, opt_state,
+                     loss_history, velocity_history):
+    """Save FWI state after completing a frequency band."""
+    import h5py
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(str(path), "w") as f:
+        f.attrs["completed_bands"] = band_idx + 1
+        f.create_dataset("params", data=np.array(params))
+        f.create_dataset("loss_history", data=np.array(loss_history))
+        for i, v in enumerate(velocity_history):
+            f.create_dataset(f"velocity_band_{i}", data=np.array(v))
+        # Save Adam state (mu, nu, count) as flat arrays
+        mu, nu = opt_state[0].mu, opt_state[0].nu
+        f.create_dataset("opt_mu", data=np.array(mu))
+        f.create_dataset("opt_nu", data=np.array(nu))
+        f.attrs["opt_count"] = int(opt_state[0].count)
+
+
+def _load_checkpoint(path: Path, learning_rate: float):
+    """Load FWI state from a previous run. Returns None if no checkpoint."""
+    import h5py
+    if not path.exists():
+        return None
+    with h5py.File(str(path), "r") as f:
+        completed_bands = int(f.attrs["completed_bands"])
+        params = jnp.array(f["params"][:])
+        loss_history = list(f["loss_history"][:])
+        velocity_history = [jnp.array(f[f"velocity_band_{i}"][:])
+                           for i in range(completed_bands)]
+        mu = jnp.array(f["opt_mu"][:])
+        nu = jnp.array(f["opt_nu"][:])
+        count = jnp.array(int(f.attrs["opt_count"]))
+    # Reconstruct Adam state
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(params)
+    opt_state = (optax.ScaleByAdamState(count=count, mu=mu, nu=nu),
+                 opt_state[1])
+    return {
+        "completed_bands": completed_bands,
+        "params": params,
+        "opt_state": opt_state,
+        "loss_history": loss_history,
+        "velocity_history": velocity_history,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +375,21 @@ def run_fwi(
 
     loss_history = []
     velocity_history = []
+    start_band = 0
+
+    # Resume from checkpoint if available
+    if config.checkpoint_dir:
+        ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
+        ckpt = _load_checkpoint(ckpt_path, config.learning_rate)
+        if ckpt is not None:
+            start_band = ckpt["completed_bands"]
+            params = ckpt["params"]
+            opt_state = ckpt["opt_state"]
+            loss_history = ckpt["loss_history"]
+            velocity_history = ckpt["velocity_history"]
+            if config.verbose:
+                print(f"  Resumed from checkpoint: {start_band} bands complete, "
+                      f"skipping to band {start_band + 1}")
 
     if config.verbose:
         print(f"FWI: {len(config.freq_bands)} frequency bands, "
@@ -340,6 +407,9 @@ def run_fwi(
     fixed_time_axis = build_time_axis(ref_medium, cfl=config.cfl, t_end=t_end)
 
     for band_idx, (fmin, fmax) in enumerate(config.freq_bands):
+        if band_idx < start_band:
+            continue
+
         if config.verbose:
             print(f"\n  Band {band_idx+1}/{len(config.freq_bands)}: "
                   f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz")
@@ -376,13 +446,16 @@ def run_fwi(
                 src_pos = src_positions_grid[int(si)]
                 obs = bp_observed[int(si)]
 
+                # Use checkpointed scan for large grids (>= 128^3)
+                use_checkpoint = all(s >= 128 for s in grid_shape)
+
                 def single_shot_loss(p, _src_pos=src_pos, _obs=obs):
                     velocity = _params_to_velocity(p, config.c_min, config.c_max)
                     domain = build_domain(grid_shape, dx)
                     medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
                     pred = simulate_shot_sensors(
                         medium, fixed_time_axis, _src_pos, sensor_positions_grid,
-                        bp_signal, dt,
+                        bp_signal, dt, checkpointed=use_checkpoint,
                     )
                     min_t = min(pred.shape[0], _obs.shape[0])
                     return loss_fn(pred[:min_t], _obs[:min_t])
@@ -416,6 +489,14 @@ def run_fwi(
         velocity_history.append(
             _params_to_velocity(params, config.c_min, config.c_max)
         )
+
+        # Checkpoint to disk for resume after preemption
+        if config.checkpoint_dir:
+            ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
+            _save_checkpoint(ckpt_path, band_idx, params, opt_state,
+                           loss_history, velocity_history)
+            if config.verbose:
+                print(f"  Checkpoint saved: band {band_idx+1} complete")
 
     final_velocity = _params_to_velocity(params, config.c_min, config.c_max)
 

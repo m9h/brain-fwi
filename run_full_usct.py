@@ -18,7 +18,8 @@ import os
 os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu")
 # DGX Spark (GB10) uses unified memory — don't preallocate
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.8")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
+os.environ.setdefault("TF_FORCE_UNIFIED_MEMORY", "1")
 
 import jax
 import jax.numpy as jnp
@@ -136,8 +137,8 @@ def main():
     parser.add_argument("--dx", type=float, default=0.002)
     parser.add_argument("--iters", type=int, default=15)
     parser.add_argument("--shots", type=int, default=8)
-    parser.add_argument("--output", type=str, default="brain_usct_results.h5")
-    parser.add_argument("--figures", type=str, default="brain_usct_figures.png")
+    parser.add_argument("--output", type=str, default="/data/datasets/brain-fwi/brain_usct_results.h5")
+    parser.add_argument("--figures", type=str, default="/data/datasets/brain-fwi/brain_usct_figures.png")
     args = parser.parse_args()
 
     N = args.grid_size
@@ -260,6 +261,9 @@ def main():
 
     c_init = jnp.full(grid_shape, 1500.0, dtype=jnp.float32)
 
+    # Checkpoint dir sits next to the output file for resume after preemption
+    ckpt_dir = str(Path(args.output).parent / "checkpoints")
+
     config = FWIConfig(
         freq_bands=freq_bands,
         n_iters_per_band=args.iters,
@@ -271,6 +275,7 @@ def main():
         gradient_smooth_sigma=2.0,
         loss_fn="l2",
         skip_bandpass=True,
+        checkpoint_dir=ckpt_dir,
         verbose=True,
     )
 

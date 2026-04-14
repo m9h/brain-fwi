@@ -206,6 +206,7 @@ def simulate_shot_sensors(
     sensor_positions_grid: Tuple,
     source_signal: jnp.ndarray,
     dt: float,
+    checkpointed: bool = False,
 ) -> jnp.ndarray:
     """Simulate a single source and record at sensor positions.
 
@@ -219,27 +220,36 @@ def simulate_shot_sensors(
         sensor_positions_grid: Tuple of (n_sensors,) index arrays.
         source_signal: (n_samples,) source wavelet.
         dt: Time step.
+        checkpointed: Use segmented gradient checkpointing for large grids.
+            Trades ~3x compute for O(sqrt(N)) memory on the backward pass.
 
     Returns:
         (n_timesteps, n_sensors) array of recorded pressure.
     """
+    if checkpointed:
+        return _simulate_shot_sensors_checkpointed(
+            medium, time_axis, src_position_grid, sensor_positions_grid,
+            source_signal, dt,
+        )
+
     from jwave.acoustics.time_varying import (
         simulate_wave_propagation,
         TimeWavePropagationSettings,
     )
 
     sources = _build_sources(medium.domain, src_position_grid, source_signal, dt)
+    sensors = _build_sensors(medium.domain, sensor_positions_grid)
 
     settings = TimeWavePropagationSettings(checkpoint=True)
 
-    # j-Wave returns pressure field snapshots
-    # We run the simulation and sample at sensor locations
-    p_field = simulate_wave_propagation(
-        medium, time_axis, sources=sources, settings=settings,
+    # Pass sensors so scan output is (n_timesteps, n_sensors) directly,
+    # instead of the full 3D pressure field at every timestep.
+    ys = simulate_wave_propagation(
+        medium, time_axis, sources=sources, sensors=sensors, settings=settings,
     )
 
-    # Extract sensor data from the pressure field
-    return _extract_sensor_data(p_field, sensor_positions_grid)
+    # ys is (n_timesteps, n_sensors) — sensor values at each step
+    return _to_array(ys)
 
 
 def _extract_sensor_data(
@@ -381,3 +391,89 @@ def generate_observed_data(
         print(f"  Forward shots: {n_sources}/{n_sources} done")
 
     return jnp.stack(all_data, axis=0)
+
+
+# ---------------------------------------------------------------------------
+# Checkpointed simulation for large grids (192^3+)
+# ---------------------------------------------------------------------------
+
+def _simulate_shot_sensors_checkpointed(
+    medium,
+    time_axis,
+    src_position_grid: Tuple[int, ...],
+    sensor_positions_grid: Tuple,
+    source_signal: jnp.ndarray,
+    dt: float,
+) -> jnp.ndarray:
+    """Memory-efficient forward simulation using segmented checkpointing.
+
+    Reimplements j-Wave's time-stepping loop with a two-level nested scan
+    so that autodiff stores only O(sqrt(N)) intermediate carries instead
+    of all N. This reduces backward-pass memory from ~218 GB to ~13 GB
+    at 192^3 with 1102 timesteps.
+
+    The physics is identical to j-Wave's simulate_wave_propagation —
+    we use the same RHS functions and k-space operators.
+    """
+    from jwave import FourierSeries
+    from jwave.acoustics.time_varying import (
+        fourier_wave_prop_params,
+        momentum_conservation_rhs,
+        mass_conservation_rhs,
+        pressure_from_density,
+        TimeWavePropagationSettings,
+    )
+    from .checkpointed_scan import checkpointed_scan
+
+    sources = _build_sources(medium.domain, src_position_grid, source_signal, dt)
+    sensors = _build_sensors(medium.domain, sensor_positions_grid)
+
+    settings = TimeWavePropagationSettings(checkpoint=False)
+
+    # Get PML and k-space parameters (same as j-Wave internally computes)
+    params = fourier_wave_prop_params(medium, time_axis, settings=settings)
+    c_ref = params["c_ref"]
+    pml_rho = params["pml_rho"]
+    pml_u = params["pml_u"]
+
+    dt_val = time_axis.dt
+    output_steps = jnp.arange(0, time_axis.Nt, 1)
+
+    # Initialize fields — mirrors j-Wave's initialization (time_varying.py:582-613)
+    ndim = len(medium.domain.N)
+    shape = tuple(list(medium.domain.N) + [ndim])
+    shape_one = tuple(list(medium.domain.N) + [1])
+
+    p0 = pml_rho.replace_params(jnp.zeros(shape_one))
+    u0 = pml_u.replace_params(jnp.zeros(shape))
+
+    rho = p0.replace_params(
+        jnp.stack([p0.params[..., i] for i in range(ndim)], axis=-1)
+    ) / ndim
+    rho = rho / (medium.sound_speed ** 2)
+
+    fields = [p0, u0, rho]
+
+    # Step function — identical to j-Wave's scan_fun (time_varying.py:615-640)
+    def scan_fun(fields, n):
+        p, u, rho_f = fields
+        mass_src_field = sources.on_grid(n)
+
+        du = momentum_conservation_rhs(
+            p, u, medium, c_ref=c_ref, dt=dt_val, params=params["fourier"],
+        )
+        u = pml_u * (pml_u * u + dt_val * du)
+
+        drho = mass_conservation_rhs(
+            p, u, mass_src_field, medium,
+            c_ref=c_ref, dt=dt_val, params=params["fourier"],
+        )
+        rho_f = pml_rho * (pml_rho * rho_f + dt_val * drho)
+
+        p = pressure_from_density(rho_f, medium)
+        return [p, u, rho_f], sensors(p, u, rho_f)
+
+    # Run with segmented checkpointing
+    _, ys = checkpointed_scan(scan_fun, fields, output_steps)
+
+    return _to_array(ys)

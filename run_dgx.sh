@@ -52,9 +52,9 @@ if [ "$PRESET" = "--full" ]; then
     ITERS=20
     SHOTS=8
     DX=0.001
-    OUTFILE="brain_usct_full.h5"
-    LOGFILE="brain_usct_full.log"
-    FIGFILE="brain_usct_full_figures.png"
+    OUTFILE="/data/datasets/brain-fwi/brain_usct_full.h5"
+    LOGFILE="/data/datasets/brain-fwi/brain_usct_full.log"
+    FIGFILE="/data/datasets/brain-fwi/brain_usct_full_figures.png"
     echo "[3/4] Running FULL preset: ${GRID}^3, ${ELEMENTS} elements"
     echo "       Estimated: ~7 hours on A100"
 else
@@ -63,9 +63,9 @@ else
     ITERS=15
     SHOTS=8
     DX=0.002
-    OUTFILE="brain_usct_medium.h5"
-    LOGFILE="brain_usct_medium.log"
-    FIGFILE="brain_usct_medium_figures.png"
+    OUTFILE="/data/datasets/brain-fwi/brain_usct_medium.h5"
+    LOGFILE="/data/datasets/brain-fwi/brain_usct_medium.log"
+    FIGFILE="/data/datasets/brain-fwi/brain_usct_medium_figures.png"
     echo "[3/4] Running MEDIUM preset: ${GRID}^3, ${ELEMENTS} elements"
     echo "       Estimated: ~17 minutes on A100"
 fi

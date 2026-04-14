@@ -217,7 +217,7 @@ def main():
                         help="Override shots per iteration")
     parser.add_argument("--no-lesion", action="store_true",
                         help="Omit simulated haemorrhage lesion")
-    parser.add_argument("--output", type=str, default="brain_recovery_3d.h5",
+    parser.add_argument("--output", type=str, default="/data/datasets/brain-fwi/brain_recovery_3d.h5",
                         help="Output HDF5 path")
     args = parser.parse_args()
 

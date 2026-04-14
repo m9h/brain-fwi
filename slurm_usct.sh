@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=brain-usct
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:gb10:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
-#SBATCH --output=slurm_%j_usct.log
-#SBATCH --error=slurm_%j_usct.log
+#SBATCH --output=/data/datasets/brain-fwi/slurm_%j_usct.log
+#SBATCH --error=/data/datasets/brain-fwi/slurm_%j_usct.log
 #
 # Brain USCT via Slurm on DGX Spark
 #
@@ -40,8 +40,10 @@ if [ "$GRID" -ge 192 ]; then
     ELEM=${ELEM:-256}
 fi
 
-OUTFILE="brain_usct_${GRID}_${SLURM_JOB_ID}.h5"
-FIGFILE="brain_usct_${GRID}_${SLURM_JOB_ID}.png"
+OUTDIR="/data/datasets/brain-fwi"
+mkdir -p "$OUTDIR"
+OUTFILE="${OUTDIR}/brain_usct_${GRID}_${SLURM_JOB_ID}.h5"
+FIGFILE="${OUTDIR}/brain_usct_${GRID}_${SLURM_JOB_ID}.png"
 
 echo "  Grid: ${GRID}^3, Elements: ${ELEM}, Iters: ${ITERS}/band"
 echo "  Output: ${OUTFILE}"
