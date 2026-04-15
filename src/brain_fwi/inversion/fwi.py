@@ -88,6 +88,8 @@ class FWIConfig:
     mask: Optional[jnp.ndarray] = None
     skip_bandpass: bool = False
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
+    precondition: bool = True  # Pseudo-Hessian source illumination compensation
+    max_step_m_per_s: float = 50.0  # Max velocity change per iteration (m/s)
     verbose: bool = True
 
 
@@ -439,15 +441,17 @@ def run_fwi(
             # Compute loss and gradient, one shot at a time to save memory.
             # Accumulate gradients across shots (equivalent to batched but
             # uses O(1 shot) memory instead of O(n_shots)).
+            # Also accumulate squared gradients for pseudo-Hessian preconditioning.
             total_loss = 0.0
             grad_accum = jnp.zeros_like(params)
+            grad_sq_accum = jnp.zeros_like(params)
+
+            # Use checkpointed scan for large grids (>= 128^3)
+            use_checkpoint = all(s >= 128 for s in grid_shape)
 
             for si in shot_indices:
                 src_pos = src_positions_grid[int(si)]
                 obs = bp_observed[int(si)]
-
-                # Use checkpointed scan for large grids (>= 128^3)
-                use_checkpoint = all(s >= 128 for s in grid_shape)
 
                 def single_shot_loss(p, _src_pos=src_pos, _obs=obs):
                     velocity = _params_to_velocity(p, config.c_min, config.c_max)
@@ -463,10 +467,20 @@ def run_fwi(
                 shot_loss, shot_grad = jax.value_and_grad(single_shot_loss)(params)
                 total_loss = total_loss + float(shot_loss)
                 grad_accum = grad_accum + shot_grad
+                grad_sq_accum = grad_sq_accum + shot_grad ** 2
 
-            loss_val = total_loss / len(shot_indices)
-            grad = grad_accum / len(shot_indices)
+            n_shots = len(shot_indices)
+            loss_val = total_loss / n_shots
+            grad = grad_accum / n_shots
             loss_history.append(loss_val)
+
+            # Source illumination preconditioning (pseudo-Hessian).
+            # Compensates for the fact that near-transducer voxels have
+            # enormous gradient amplitude while interior brain voxels
+            # get tiny gradients. Standard in geophysical FWI (Shin 2001).
+            if config.precondition:
+                illum = jnp.sqrt(grad_sq_accum / n_shots)
+                grad = grad / (illum + 1e-12 * jnp.max(illum))
 
             # Process gradient
             if config.gradient_smooth_sigma > 0:
@@ -474,6 +488,16 @@ def run_fwi(
 
             if config.mask is not None:
                 grad = grad * config.mask
+
+            # Adaptive step length: normalise so max velocity change
+            # per iteration is bounded (like Stride's max-norm step).
+            # Convert max_step from velocity-space to parameter-space.
+            if config.max_step_m_per_s > 0:
+                grad_max = jnp.max(jnp.abs(grad))
+                step_scale = config.max_step_m_per_s / (
+                    (config.c_max - config.c_min) * (grad_max + 1e-30)
+                )
+                grad = grad * step_scale
 
             # Optimizer update
             updates, opt_state = optimizer.update(grad, opt_state, params)

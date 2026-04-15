@@ -46,6 +46,7 @@ def build_medium(
     sound_speed: Union[float, jnp.ndarray],
     density: Union[float, jnp.ndarray],
     pml_size: int = 20,
+    attenuation: Union[float, jnp.ndarray, None] = None,
 ):
     """Create a j-Wave medium from acoustic property arrays.
 
@@ -54,6 +55,7 @@ def build_medium(
         sound_speed: Scalar or array matching domain.N. Units: m/s.
         density: Scalar or array. Units: kg/m^3.
         pml_size: PML absorbing boundary thickness in grid points.
+        attenuation: Scalar or array. Units: dB/cm/MHz. None = lossless.
 
     Returns:
         jwave.geometry.Medium
@@ -69,12 +71,16 @@ def build_medium(
             arr = arr[..., jnp.newaxis]
         return FourierSeries(arr, domain)
 
-    return Medium(
+    kwargs = dict(
         domain=domain,
         sound_speed=to_field(sound_speed),
         density=to_field(density),
         pml_size=pml_size,
     )
+    if attenuation is not None:
+        kwargs["attenuation"] = to_field(attenuation)
+
+    return Medium(**kwargs)
 
 
 def build_time_axis(medium, cfl: float = 0.3, t_end: Optional[float] = None):

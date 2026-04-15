@@ -48,7 +48,14 @@ from brain_fwi.inversion.fwi import FWIConfig, run_fwi
 
 
 def create_head_phantom(grid_shape, dx):
-    """Anatomical 3D head: scalp, skull, CSF, GM, WM, ventricles, lesion."""
+    """Anatomical 3D head with three-layer heterogeneous skull.
+
+    Skull structure (ITRUSST BM3 benchmark, Aubry et al. 2022):
+      - Outer cortical table: ~2mm, label 7, c=2800 m/s, rho=1850
+      - Diploe (trabecular):  ~3mm, label 11, c=2300 m/s, rho=1700
+      - Inner cortical table: ~2mm, label 7, c=2800 m/s, rho=1850
+    Total skull thickness: ~7mm (realistic adult calvarium).
+    """
     nx, ny, nz = grid_shape
     cx, cy, cz = nx // 2, ny // 2, nz // 2
 
@@ -65,23 +72,32 @@ def create_head_phantom(grid_shape, dx):
         ((z - cz) / head_c) ** 2
     )
 
-    scalp_t = 0.003 / (head_a * dx)
-    skull_t = 0.007 / (head_a * dx)
-    csf_t = 0.002 / (head_a * dx)
-    cortex_t = 0.004 / (head_a * dx)
+    # Layer thicknesses (normalised by head semi-axis)
+    scalp_t = 0.003 / (head_a * dx)       # 3mm scalp
+    outer_bone_t = 0.002 / (head_a * dx)   # 2mm outer cortical table
+    diploe_t = 0.003 / (head_a * dx)       # 3mm trabecular/diploe
+    inner_bone_t = 0.002 / (head_a * dx)   # 2mm inner cortical table
+    csf_t = 0.002 / (head_a * dx)          # 2mm subarachnoid space
+    cortex_t = 0.004 / (head_a * dx)       # 4mm cortical ribbon
 
     r_scalp = 1.0
-    r_skull_o = r_scalp - scalp_t
-    r_skull_i = r_skull_o - skull_t
-    r_csf_i = r_skull_i - csf_t
+    r_outer_bone = r_scalp - scalp_t
+    r_diploe = r_outer_bone - outer_bone_t
+    r_inner_bone = r_diploe - diploe_t
+    r_csf = r_inner_bone - inner_bone_t
+    r_csf_i = r_csf - csf_t
     r_cortex_i = r_csf_i - cortex_t
 
+    # BrainWeb labels: 6=scalp, 7=cortical bone, 11=trabecular bone,
+    # 1=CSF, 2=GM, 3=WM, 8=blood vessels
     labels = jnp.zeros(grid_shape, dtype=jnp.int32)
-    labels = jnp.where(r <= r_scalp, 6, labels)
-    labels = jnp.where(r <= r_skull_o, 7, labels)
-    labels = jnp.where(r <= r_skull_i, 1, labels)
-    labels = jnp.where(r <= r_csf_i, 2, labels)
-    labels = jnp.where(r <= r_cortex_i, 3, labels)
+    labels = jnp.where(r <= r_scalp, 6, labels)          # scalp
+    labels = jnp.where(r <= r_outer_bone, 7, labels)     # outer cortical table
+    labels = jnp.where(r <= r_diploe, 11, labels)        # diploe (trabecular)
+    labels = jnp.where(r <= r_inner_bone, 7, labels)     # inner cortical table
+    labels = jnp.where(r <= r_csf, 1, labels)            # CSF
+    labels = jnp.where(r <= r_csf_i, 2, labels)          # grey matter
+    labels = jnp.where(r <= r_cortex_i, 3, labels)       # white matter
 
     # Lateral ventricles
     for y_off in [-0.015 / dx, 0.015 / dx]:
@@ -103,8 +119,9 @@ def create_head_phantom(grid_shape, dx):
     props = map_labels_to_all(labels)
     c = jnp.where(labels == 0, 1500.0, props["sound_speed"])
     rho = jnp.where(labels == 0, 1000.0, props["density"])
+    alpha = jnp.where(labels == 0, 0.0, props["attenuation"])
 
-    return labels, c, rho
+    return labels, c, rho, alpha
 
 
 def create_helmet(n_elements, grid_shape, dx):
@@ -165,7 +182,7 @@ def main():
     print("  STEP 1: Head Phantom")
     print(f"{'='*70}")
     t0 = time.time()
-    labels, c_true, rho = create_head_phantom(grid_shape, dx)
+    labels, c_true, rho, alpha = create_head_phantom(grid_shape, dx)
 
     tissue_counts = {
         "Water (coupling)": int(jnp.sum(labels == 0)),
@@ -173,7 +190,8 @@ def main():
         "Grey matter": int(jnp.sum(labels == 2)),
         "White matter": int(jnp.sum(labels == 3)),
         "Scalp": int(jnp.sum(labels == 6)),
-        "Skull": int(jnp.sum(labels == 7)),
+        "Skull (cortical)": int(jnp.sum(labels == 7)),
+        "Skull (trabecular)": int(jnp.sum(labels == 11)),
         "Lesion (haemorrhage)": int(jnp.sum(labels == 8)),
     }
     for tissue, count in tissue_counts.items():
@@ -231,8 +249,8 @@ def main():
 
     source_signal = _build_source_signal(max_freq, dt, n_samples)
 
-    # Generate observed data with true medium
-    medium_true = build_medium(domain, c_true, rho, pml_size=10)
+    # Generate observed data with true medium (including attenuation)
+    medium_true = build_medium(domain, c_true, rho, pml_size=10, attenuation=alpha)
     n_data_src = min(n_actual, args.shots * len(freq_bands) * 3)
 
     print(f"  Simulating {n_data_src} shots...")
@@ -264,17 +282,23 @@ def main():
     # Checkpoint dir sits next to the output file for resume after preemption
     ckpt_dir = str(Path(args.output).parent / "checkpoints")
 
+    # Water mask: only update voxels inside the head (labels > 0)
+    head_mask = (labels > 0).astype(jnp.float32)
+
     config = FWIConfig(
         freq_bands=freq_bands,
         n_iters_per_band=args.iters,
         shots_per_iter=args.shots,
-        learning_rate=100.0,
+        learning_rate=5.0,
         c_min=1400.0,
         c_max=c_max_fwi,
         pml_size=10,
-        gradient_smooth_sigma=2.0,
+        gradient_smooth_sigma=3.0,
         loss_fn="l2",
         skip_bandpass=True,
+        mask=head_mask,
+        precondition=False,
+        max_step_m_per_s=0,
         checkpoint_dir=ckpt_dir,
         verbose=True,
     )
@@ -307,7 +331,9 @@ def main():
         "Grey matter": labels == 2,
         "White matter": labels == 3,
         "CSF": labels == 1,
-        "Skull": labels == 7,
+        "Skull (cortical)": labels == 7,
+        "Skull (trabecular)": labels == 11,
+        "Skull (all bone)": (labels == 7) | (labels == 11),
         "Scalp": labels == 6,
     }
 
