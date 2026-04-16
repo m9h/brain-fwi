@@ -289,7 +289,7 @@ def main():
         freq_bands=freq_bands,
         n_iters_per_band=args.iters,
         shots_per_iter=args.shots,
-        learning_rate=5.0,
+        learning_rate=50.0,  # Max velocity update per iteration (m/s)
         c_min=1400.0,
         c_max=c_max_fwi,
         pml_size=10,

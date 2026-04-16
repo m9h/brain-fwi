@@ -368,11 +368,16 @@ def run_fwi(
     n_sources = len(src_positions_grid)
     loss_fn = _get_loss_fn(config.loss_fn, config.envelope_weight)
 
-    # Initialize reparameterized parameters
-    params = _velocity_to_params(initial_velocity, config.c_min, config.c_max)
+    # Optimise directly in velocity space (m/s).
+    # No sigmoid reparameterisation — just clip after each update.
+    # This gives the learning rate physical meaning: LR=1 means Adam
+    # takes ~1 m/s steps (modulated by its moment estimates).
+    params = initial_velocity.copy()
 
-    # Adam optimizer
-    optimizer = optax.adam(config.learning_rate)
+    # Steepest descent with gradient normalisation (Stride-style).
+    # Combined with max_step_m_per_s, the learning rate directly controls
+    # the maximum velocity change per iteration in m/s.
+    optimizer = optax.sgd(config.learning_rate)
     opt_state = optimizer.init(params)
 
     loss_history = []
@@ -453,8 +458,7 @@ def run_fwi(
                 src_pos = src_positions_grid[int(si)]
                 obs = bp_observed[int(si)]
 
-                def single_shot_loss(p, _src_pos=src_pos, _obs=obs):
-                    velocity = _params_to_velocity(p, config.c_min, config.c_max)
+                def single_shot_loss(velocity, _src_pos=src_pos, _obs=obs):
                     domain = build_domain(grid_shape, dx)
                     medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
                     pred = simulate_shot_sensors(
@@ -489,30 +493,24 @@ def run_fwi(
             if config.mask is not None:
                 grad = grad * config.mask
 
-            # Adaptive step length: normalise so max velocity change
-            # per iteration is bounded (like Stride's max-norm step).
-            # Convert max_step from velocity-space to parameter-space.
-            if config.max_step_m_per_s > 0:
-                grad_max = jnp.max(jnp.abs(grad))
-                step_scale = config.max_step_m_per_s / (
-                    (config.c_max - config.c_min) * (grad_max + 1e-30)
-                )
-                grad = grad * step_scale
+            # Normalise gradient by max magnitude so that the optimizer
+            # learning rate directly controls max velocity change in m/s.
+            # With SGD(lr=50): max update = 50 m/s per iteration.
+            grad_max = jnp.max(jnp.abs(grad))
+            grad = grad / (grad_max + 1e-30)
 
-            # Optimizer update
+            # Optimizer update + clip to physical bounds
             updates, opt_state = optimizer.update(grad, opt_state, params)
             params = optax.apply_updates(params, updates)
+            params = jnp.clip(params, config.c_min, config.c_max)
 
             if config.verbose and (it + 1) % 5 == 0:
-                vel = _params_to_velocity(params, config.c_min, config.c_max)
                 print(f"    Iter {it+1}/{config.n_iters_per_band}: "
                       f"loss={loss_val:.6f}, "
-                      f"c=[{float(jnp.min(vel)):.0f}, {float(jnp.max(vel)):.0f}] m/s")
+                      f"c=[{float(jnp.min(params)):.0f}, {float(jnp.max(params)):.0f}] m/s")
 
         # Save velocity snapshot at end of band
-        velocity_history.append(
-            _params_to_velocity(params, config.c_min, config.c_max)
-        )
+        velocity_history.append(params)
 
         # Checkpoint to disk for resume after preemption
         if config.checkpoint_dir:
@@ -522,10 +520,8 @@ def run_fwi(
             if config.verbose:
                 print(f"  Checkpoint saved: band {band_idx+1} complete")
 
-    final_velocity = _params_to_velocity(params, config.c_min, config.c_max)
-
     return FWIResult(
-        velocity=final_velocity,
+        velocity=params,
         velocity_history=velocity_history,
         loss_history=loss_history,
         params=params,
