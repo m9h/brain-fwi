@@ -297,8 +297,6 @@ def main():
         loss_fn="l2",
         skip_bandpass=True,
         mask=head_mask,
-        precondition=False,
-        max_step_m_per_s=0,
         checkpoint_dir=ckpt_dir,
         verbose=True,
     )

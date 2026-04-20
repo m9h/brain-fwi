@@ -195,12 +195,12 @@ def main():
         ],
         n_iters_per_band=args.iters,
         shots_per_iter=args.shots,
-        learning_rate=5.0,
+        learning_rate=50.0,  # Max velocity update per iteration (m/s)
         c_min=1400.0,
         c_max=3200.0,
         pml_size=10,
-        gradient_smooth_sigma=2.0,
-        loss_fn="multiscale",
+        gradient_smooth_sigma=3.0,
+        loss_fn="l2",
         verbose=True,
     )
 

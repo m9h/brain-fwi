@@ -50,16 +50,19 @@ from .losses import l2_loss, envelope_loss, multiscale_loss
 class FWIConfig:
     """Configuration for Full Waveform Inversion.
 
+    Optimises directly in velocity space (m/s) using steepest descent
+    with max-norm gradient normalisation. The learning rate equals the
+    maximum velocity change per iteration in m/s.
+
     Attributes:
         freq_bands: List of (f_min, f_max) frequency bands in Hz.
             FWI proceeds from low to high frequency (multi-scale).
-            Stride pattern: start coarse for convexity, refine.
         n_iters_per_band: Iterations per frequency band.
         shots_per_iter: Number of sources per iteration (stochastic).
-            Stride default: 16. j-Wave FWI: 1.
-        learning_rate: Adam learning rate.
-        c_min: Minimum sound speed (m/s). Used for reparameterization.
-        c_max: Maximum sound speed (m/s).
+        learning_rate: Maximum velocity update per iteration (m/s).
+            50 m/s is a good default for transcranial FWI.
+        c_min: Minimum sound speed bound (m/s). Velocity clipped after update.
+        c_max: Maximum sound speed bound (m/s).
         pml_size: PML absorbing boundary thickness (grid points).
         cfl: CFL stability number.
         gradient_smooth_sigma: Gaussian smoothing sigma for gradients
@@ -67,7 +70,9 @@ class FWIConfig:
         loss_fn: Loss function name ('l2', 'envelope', 'multiscale').
         envelope_weight: Weight for envelope term in multiscale loss.
         mask: Optional binary mask for inversion region.
-            Gradients outside mask are zeroed (e.g., mask out PML, water).
+            Gradients outside mask are zeroed. Use (labels > 0) to
+            exclude water coupling.
+        precondition: Apply pseudo-Hessian source illumination compensation.
         verbose: Print iteration progress.
     """
     freq_bands: List[Tuple[float, float]] = field(default_factory=lambda: [
@@ -77,19 +82,18 @@ class FWIConfig:
     ])
     n_iters_per_band: int = 30
     shots_per_iter: int = 4
-    learning_rate: float = 5.0
+    learning_rate: float = 50.0  # Max velocity update per iteration (m/s)
     c_min: float = 1400.0
     c_max: float = 3200.0
     pml_size: int = 20
     cfl: float = 0.3
     gradient_smooth_sigma: float = 3.0
-    loss_fn: str = "multiscale"
+    loss_fn: str = "l2"
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
     skip_bandpass: bool = False
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
-    precondition: bool = True  # Pseudo-Hessian source illumination compensation
-    max_step_m_per_s: float = 50.0  # Max velocity change per iteration (m/s)
+    precondition: bool = False  # Pseudo-Hessian source illumination compensation
     verbose: bool = True
 
 

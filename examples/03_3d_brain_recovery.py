@@ -347,17 +347,21 @@ def main():
 
     c_init = jnp.full(grid_shape, 1500.0, dtype=jnp.float32)
 
+    # Water mask: only update voxels inside the head
+    head_mask = (labels > 0).astype(jnp.float32)
+
     config = FWIConfig(
         freq_bands=freq_bands,
         n_iters_per_band=iters,
         shots_per_iter=shots,
-        learning_rate=0.5,
+        learning_rate=50.0,  # Max velocity update per iteration (m/s)
         c_min=1400.0,
         c_max=3200.0,
         pml_size=10,
         gradient_smooth_sigma=3.0,
         loss_fn="l2",
         skip_bandpass=True,
+        mask=head_mask,
         verbose=True,
     )
 
