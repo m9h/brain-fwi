@@ -1,17 +1,18 @@
 """MIDA head model loading and acoustic property mapping.
 
-The MIDA (Multimodal Imaging-Based Detailed Anatomical) model provides
-153 anatomical structures at 500um isotropic resolution. This module
-maps MIDA tissue labels to acoustic properties using ITRUSST benchmark
-values and literature compilations.
+The MIDA (Multimodal Imaging-Based Detailed Anatomical) v1.0 model
+provides 116 anatomical structures at 500um isotropic resolution
+(grid 480 x 480 x 350). This module maps MIDA tissue labels to
+acoustic properties using ITRUSST benchmark values and literature
+compilations.
 
-This fills the gap left by Sonus (neurotech-berkeley/Sonus) which
-provides a pre-baked velocity HDF5 but no tissue-to-acoustic mapping
-code, and only velocity (no density or attenuation).
+Label mapping is derived from `MIDA_v1.txt` (IT'IS Foundation,
+distributed with the dataset). The per-label grouping below is a
+hand-curated bucketing of those 116 structures into acoustic
+categories that share a common (c, rho, alpha) triplet.
 
 The MIDA model requires a license from IT'IS Foundation (not open source):
     https://itis.swiss/virtual-population/regional-human-models/mida-model/
-    Contact: MIDAmodel@fda.hhs.gov
 
 For open alternatives, use BrainWeb (brainweb.py) or Colin27 with
 tissue segmentation from SimNIBS CHARM/headreco.
@@ -30,42 +31,221 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# MIDA tissue group definitions
+# MIDA v1.0 label names (from MIDA_v1.txt, IT'IS Foundation)
 # ---------------------------------------------------------------------------
-# MIDA has 153 labels. We group them into acoustic categories since many
-# structures share similar acoustic properties. The label→group mapping
-# is based on the MIDA documentation and Guasch et al. supplementary data.
 
-MIDA_TISSUE_GROUPS: Dict[str, list] = {
-    "air": [0],  # background/air
-    "skin": [1, 2],  # skin, subcutaneous fat
-    "fat": [3, 4, 5],  # adipose, periorbital fat, fat pads
-    "muscle": list(range(6, 32)),  # 26 individual muscles
-    "cortical_bone": [
-        32, 33, 34,  # skull outer table, inner table, teeth
-        35, 36, 37, 38, 39, 40, 41, 42,  # vertebrae, mandible, bones
-    ],
-    "trabecular_bone": [
-        43, 44,  # diploe (skull spongy layer), bone marrow
-    ],
-    "cartilage": [45, 46, 47, 48],  # nasal, ear, laryngeal, etc.
-    "csf": [49, 50, 51],  # CSF, ventricles, subarachnoid space
-    "grey_matter": [52, 53, 54, 55, 56, 57, 58, 59, 60],  # cortex, cerebellum GM, thalamic nuclei (9 groups)
-    "white_matter": [61, 62, 63, 64, 65],  # cerebral WM, cerebellar WM, corpus callosum, brainstem, tracts
-    "blood_vessels": list(range(66, 90)),  # arteries, veins, sinuses (24 structures)
-    "dura": [90, 91],  # dura mater, falx cerebri
-    "eye": [92, 93, 94, 95, 96, 97],  # lens, cornea, vitreous, retina, sclera, optic nerve
-    "nerve": list(range(98, 122)),  # 12 cranial nerve pairs (24 structures)
-    "gland": [122, 123, 124, 125],  # pituitary, pineal, thyroid, salivary
-    "mucosa": list(range(126, 140)),  # nasal mucosa, oral mucosa, etc.
-    "connective": list(range(140, 154)),  # tendons, ligaments, fascia, etc.
+MIDA_LABEL_NAMES: Dict[int, str] = {
+    1: "Dura",
+    2: "Cerebellum Gray Matter",
+    3: "Pineal Body",
+    4: "Amygdala",
+    5: "Hippocampus",
+    6: "CSF Ventricles",
+    7: "Caudate Nucleus",
+    8: "Putamen",
+    9: "Cerebellum White Matter",
+    10: "Brain Gray Matter",
+    11: "Brainstem Midbrain",
+    12: "Brain White Matter",
+    13: "Spinal Cord",
+    14: "Brainstem Pons",
+    15: "Brainstem Medulla",
+    16: "Nucleus Accumbens",
+    17: "Globus Pallidus",
+    18: "Optic Tract",
+    19: "Hypophysis (Pituitary Gland)",
+    20: "Mammillary Body",
+    21: "Hypothalamus",
+    22: "Commissura (Anterior)",
+    23: "Commissura (Posterior)",
+    24: "Blood Arteries",
+    25: "Blood Veins",
+    26: "Air Internal - Ethmoidal Sinus",
+    27: "Air Internal - Frontal Sinus",
+    28: "Air Internal - Maxillary Sinus",
+    29: "Air Internal - Sphenoidal Sinus",
+    30: "Air Internal - Mastoid",
+    31: "Air Internal - Nasal/Pharynx",
+    32: "CSF General",
+    33: "Ear Cochlea",
+    34: "Ear Semicircular Canals",
+    35: "Ear Auricular Cartilage (Pinna)",
+    36: "Mandible",
+    37: "Mucosa",
+    38: "Muscle (General)",
+    39: "Nasal Septum (Cartilage)",
+    40: "Skull",
+    41: "Teeth",
+    42: "Tongue",
+    43: "Adipose Tissue",
+    44: "Vertebra - C1 (atlas)",
+    45: "Vertebra - C2 (axis)",
+    46: "Vertebra - C3",
+    47: "Vertebra - C4",
+    48: "Vertebra - C5",
+    49: "Intervertebral Discs",
+    50: "Background",
+    51: "Epidermis/Dermis",
+    52: "Skull Diploe",
+    53: "Skull Inner Table",
+    54: "Skull Outer Table",
+    55: "Eye Lens",
+    56: "Eye Retina/Choroid/Sclera",
+    57: "Eye Vitreous",
+    58: "Eye Cornea",
+    59: "Eye Aqueous",
+    60: "Muscle - Platysma",
+    61: "Tendon - Galea Aponeurotica",
+    62: "Subcutaneous Adipose Tissue",
+    63: "Muscle - Temporalis/Temporoparietalis",
+    64: "Muscle - Occipitiofrontalis - Frontal Belly",
+    65: "Muscle - Lateral Pterygoid",
+    66: "Muscle - Masseter",
+    67: "Muscle - Splenius Capitis",
+    68: "Muscle - Sternocleidomastoid",
+    69: "Muscle - Occipitiofrontalis - Occipital Belly",
+    70: "Muscle - Trapezius",
+    71: "Muscle - Mentalis",
+    72: "Muscle - Depressor Anguli Oris",
+    73: "Muscle - Depressor Labii",
+    74: "Muscle - Nasalis",
+    75: "Muscle - Orbicularis Oris",
+    76: "Muscles - Procerus",
+    77: "Muscle - Levator Labii Superioris",
+    78: "Muscle - Zygomaticus Major",
+    79: "Muscle - Orbicularis Oculi",
+    80: "Muscle - Levator Scapulae",
+    81: "Muscle - Medial Pterygoid",
+    82: "Muscle - Zygomaticus Minor",
+    83: "Muscles - Risorius",
+    84: "Muscle - Buccinator",
+    85: "Ear Auditory Canal",
+    86: "Ear Pharyngotympanic Tube",
+    87: "Hyoid Bone",
+    88: "Submandibular Gland",
+    89: "Parotid Gland",
+    90: "Sublingual Gland",
+    91: "Muscle - Superior Rectus",
+    92: "Muscle - Medial Rectus",
+    93: "Muscle - Lateral Rectus",
+    94: "Muscle - Inferior Rectus",
+    95: "Muscle - Superior Oblique",
+    96: "Muscle - Inferior Oblique",
+    97: "Air Internal - Oral Cavity",
+    98: "Tendon - Temporalis Tendon",
+    99: "Substantia Nigra",
+    100: "Cerebral Peduncles",
+    101: "Optic Chiasm",
+    102: "Cranial Nerve I - Olfactory",
+    103: "Cranial Nerve II - Optic",
+    104: "Cranial Nerve III - Oculomotor",
+    105: "Cranial Nerve IV - Trochlear",
+    106: "Cranial Nerve V - Trigeminal",
+    107: "Cranial Nerve V2 - Maxillary Division",
+    108: "Cranial Nerve V3 - Mandibular Division",
+    109: "Cranial Nerve VI - Abducens",
+    110: "Cranial Nerve VII - Facial",
+    111: "Cranial Nerve VIII - Vestibulocochlear",
+    112: "Cranial Nerve IX - Glossopharyngeal",
+    113: "Cranial Nerve X - Vagus",
+    114: "Cranial Nerve XI - Accessory",
+    115: "Cranial Nerve XII - Hypoglossal",
+    116: "Thalamus",
 }
 
-# Build reverse lookup: label_id → group_name
-_LABEL_TO_GROUP: Dict[int, str] = {}
-for _group, _labels in MIDA_TISSUE_GROUPS.items():
-    for _lab in _labels:
-        _LABEL_TO_GROUP[_lab] = _group
+
+# ---------------------------------------------------------------------------
+# Per-label acoustic grouping
+# ---------------------------------------------------------------------------
+# Each of the 116 MIDA v1.0 labels is assigned to one acoustic group.
+# Grouping follows tissue similarity in (c, rho, alpha) — not anatomy —
+# so e.g. all cortical-bone structures (skull tables, mandible, vertebrae,
+# teeth, hyoid) share a single group.
+#
+# Notes on edge cases:
+#   - Skull Diploe (52) is trabecular; Inner/Outer Tables (53,54) are cortical.
+#     Label 40 "Skull" is an aggregate/fallback that MIDA sometimes uses for
+#     voxels not subdivided into diploe/tables — treated as cortical.
+#   - Ear Cochlea (33) and Semicircular Canals (34) are bony labyrinth → cortical.
+#   - Ear Auditory Canal (85) and Oral Cavity (97) are air-filled.
+#   - Intervertebral Discs (49) are fibrocartilage → cartilage.
+#   - Background (50) is remapped to water for the acoustic coupling medium.
+#   - Label 0 has no MIDA meaning but is treated as water for padding robustness.
+
+MIDA_LABEL_TO_GROUP: Dict[int, str] = {
+    # Padding / background → water coupling medium
+    0: "water",
+    50: "water",
+    # Dura
+    1: "dura",
+    # CSF
+    6: "csf", 32: "csf",
+    # Grey matter + deep nuclei + brainstem
+    2: "grey_matter", 3: "grey_matter", 4: "grey_matter",
+    5: "grey_matter", 7: "grey_matter", 8: "grey_matter",
+    10: "grey_matter", 11: "grey_matter", 14: "grey_matter",
+    15: "grey_matter", 16: "grey_matter", 17: "grey_matter",
+    20: "grey_matter", 21: "grey_matter", 99: "grey_matter",
+    100: "grey_matter", 116: "grey_matter",
+    # White matter + spinal cord + major tracts
+    9: "white_matter", 12: "white_matter", 13: "white_matter",
+    18: "white_matter", 22: "white_matter", 23: "white_matter",
+    # Glands
+    19: "gland", 88: "gland", 89: "gland", 90: "gland",
+    # Blood
+    24: "blood_vessels", 25: "blood_vessels",
+    # Air cavities
+    26: "air", 27: "air", 28: "air", 29: "air",
+    30: "air", 31: "air", 85: "air", 97: "air",
+    # Cortical bone (skull aggregate + inner/outer tables + mandible
+    # + vertebrae + teeth + hyoid + bony ear labyrinth)
+    33: "cortical_bone", 34: "cortical_bone", 36: "cortical_bone",
+    40: "cortical_bone", 41: "cortical_bone",
+    44: "cortical_bone", 45: "cortical_bone", 46: "cortical_bone",
+    47: "cortical_bone", 48: "cortical_bone",
+    53: "cortical_bone", 54: "cortical_bone", 87: "cortical_bone",
+    # Trabecular bone (skull diploe)
+    52: "trabecular_bone",
+    # Cartilage
+    35: "cartilage", 39: "cartilage", 49: "cartilage",
+    # Mucosa
+    37: "mucosa", 86: "mucosa",
+    # Muscle (general + platysma + facial/masticatory + extraocular + tongue)
+    38: "muscle", 42: "muscle", 60: "muscle",
+    63: "muscle", 64: "muscle", 65: "muscle", 66: "muscle",
+    67: "muscle", 68: "muscle", 69: "muscle", 70: "muscle",
+    71: "muscle", 72: "muscle", 73: "muscle", 74: "muscle",
+    75: "muscle", 76: "muscle", 77: "muscle", 78: "muscle",
+    79: "muscle", 80: "muscle", 81: "muscle", 82: "muscle",
+    83: "muscle", 84: "muscle",
+    91: "muscle", 92: "muscle", 93: "muscle", 94: "muscle",
+    95: "muscle", 96: "muscle",
+    # Skin (epidermis/dermis)
+    51: "skin",
+    # Fat (adipose + subcutaneous)
+    43: "fat", 62: "fat",
+    # Connective tissue (tendons)
+    61: "connective", 98: "connective",
+    # Eye sub-components
+    55: "eye", 56: "eye", 57: "eye", 58: "eye", 59: "eye",
+    # Nerves (cranial nerves + optic chiasm)
+    101: "nerve",
+    102: "nerve", 103: "nerve", 104: "nerve", 105: "nerve",
+    106: "nerve", 107: "nerve", 108: "nerve", 109: "nerve",
+    110: "nerve", 111: "nerve", 112: "nerve", 113: "nerve",
+    114: "nerve", 115: "nerve",
+}
+
+
+# Derived: group_name → list of label IDs (preserves MIDA_TISSUE_GROUPS API)
+def _build_tissue_groups() -> Dict[str, list]:
+    groups: Dict[str, list] = {}
+    for label, group in sorted(MIDA_LABEL_TO_GROUP.items()):
+        groups.setdefault(group, []).append(label)
+    return groups
+
+
+MIDA_TISSUE_GROUPS: Dict[str, list] = _build_tissue_groups()
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +256,7 @@ for _group, _labels in MIDA_TISSUE_GROUPS.items():
 
 MIDA_ACOUSTIC_PROPERTIES: Dict[str, Dict[str, float]] = {
     #                    c [m/s]    rho [kg/m³]  alpha [dB/cm/MHz]
+    "water":           {"sound_speed": 1500.0, "density": 1000.0, "attenuation": 0.0},
     "air":             {"sound_speed": 343.0,  "density": 1.225,  "attenuation": 0.0},
     "skin":            {"sound_speed": 1610.0, "density": 1090.0, "attenuation": 0.8},
     "fat":             {"sound_speed": 1478.0, "density": 950.0,  "attenuation": 0.4},
@@ -95,26 +276,22 @@ MIDA_ACOUSTIC_PROPERTIES: Dict[str, Dict[str, float]] = {
     "connective":      {"sound_speed": 1520.0, "density": 1030.0, "attenuation": 0.5},
 }
 
-# Default for unknown labels
-_DEFAULT_PROPS = {"sound_speed": 1500.0, "density": 1000.0, "attenuation": 0.0}
+# Default for unknown labels (out-of-range) — behaves as water
+_DEFAULT_PROPS = MIDA_ACOUSTIC_PROPERTIES["water"]
 
-# Pre-build lookup arrays (max label → property value) for fast vectorized mapping
-_MAX_MIDA_LABEL = 153
-_C_MIDA = np.zeros(_MAX_MIDA_LABEL + 1, dtype=np.float32)
-_RHO_MIDA = np.zeros(_MAX_MIDA_LABEL + 1, dtype=np.float32)
-_ALPHA_MIDA = np.zeros(_MAX_MIDA_LABEL + 1, dtype=np.float32)
+# Pre-build lookup arrays for fast vectorized mapping
+_MAX_MIDA_LABEL = max(MIDA_LABEL_NAMES.keys())  # 116
+_C_MIDA = np.full(_MAX_MIDA_LABEL + 1, _DEFAULT_PROPS["sound_speed"], dtype=np.float32)
+_RHO_MIDA = np.full(_MAX_MIDA_LABEL + 1, _DEFAULT_PROPS["density"], dtype=np.float32)
+_ALPHA_MIDA = np.full(_MAX_MIDA_LABEL + 1, _DEFAULT_PROPS["attenuation"], dtype=np.float32)
 
-for _i in range(_MAX_MIDA_LABEL + 1):
-    _group = _LABEL_TO_GROUP.get(_i, None)
-    _props = MIDA_ACOUSTIC_PROPERTIES.get(_group, _DEFAULT_PROPS) if _group else _DEFAULT_PROPS
-    _C_MIDA[_i] = _props["sound_speed"]
-    _RHO_MIDA[_i] = _props["density"]
-    _ALPHA_MIDA[_i] = _props["attenuation"]
-
-# Label 0 (background/air) → remap to water for acoustic coupling medium
-_C_MIDA[0] = 1500.0
-_RHO_MIDA[0] = 1000.0
-_ALPHA_MIDA[0] = 0.0
+for _lab, _group in MIDA_LABEL_TO_GROUP.items():
+    if _lab > _MAX_MIDA_LABEL:
+        continue
+    _props = MIDA_ACOUSTIC_PROPERTIES[_group]
+    _C_MIDA[_lab] = _props["sound_speed"]
+    _RHO_MIDA[_lab] = _props["density"]
+    _ALPHA_MIDA[_lab] = _props["attenuation"]
 
 _C_MIDA_JAX = jnp.array(_C_MIDA)
 _RHO_MIDA_JAX = jnp.array(_RHO_MIDA)
@@ -131,7 +308,8 @@ def map_mida_labels_to_acoustic(
     """Map MIDA tissue labels to acoustic properties.
 
     Args:
-        labels: Integer array of any shape. Values 0-153.
+        labels: Integer array of any shape. Valid MIDA v1.0 values are 1-116;
+            label 50 (Background) and any unknown label map to water.
 
     Returns:
         Dict with 'sound_speed' (m/s), 'density' (kg/m^3),
