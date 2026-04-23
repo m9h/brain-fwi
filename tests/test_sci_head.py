@@ -22,7 +22,7 @@ class TestSCIAcousticTable:
             assert lab in SCI_ACOUSTIC_PROPERTIES
 
     def test_cortical_bone_matches_itrusst(self):
-        skull = SCI_ACOUSTIC_PROPERTIES[2]
+        skull = SCI_ACOUSTIC_PROPERTIES[6]   # label 6 = Skull
         assert skull["sound_speed"] == 2800.0
         assert skull["density"] == 1850.0
 
@@ -31,26 +31,36 @@ class TestSCIAcousticTable:
         assert bg["sound_speed"] == 1500.0
         assert bg["density"] == 1000.0
 
+    def test_label_names_match_verified_ordering(self):
+        """Verified against HeadSegmentation.nrrd by slice inspection
+        (scripts/inspect_sci_head.py). See sci_head.py docstring."""
+        assert SCI_LABEL_NAMES[1] == "Eyes"
+        assert SCI_LABEL_NAMES[2] == "Gray Matter"
+        assert SCI_LABEL_NAMES[3] == "White Matter"
+        assert SCI_LABEL_NAMES[6] == "Skull"
+        assert SCI_LABEL_NAMES[7] == "Scalp"
+
 
 class TestMapLabels:
     def test_shape_preserved(self):
-        labels = np.ones((4, 4, 4), dtype=np.int32) * 5  # GM
+        labels = np.ones((4, 4, 4), dtype=np.int32) * 2  # GM (verified ordering)
         props = map_sci_labels_to_acoustic(labels)
         assert props["sound_speed"].shape == (4, 4, 4)
         np.testing.assert_allclose(np.array(props["sound_speed"]), 1560.0)
 
     def test_mixed_labels(self):
-        labels = np.array([[2, 5], [6, 8]], dtype=np.int32)  # skull, GM, WM, bg
+        # Using the verified SCI ordering: 2=GM, 3=WM, 6=skull, 8=background
+        labels = np.array([[2, 3], [6, 8]], dtype=np.int32)
         props = map_sci_labels_to_acoustic(labels)
         c = np.array(props["sound_speed"])
-        assert c[0, 0] == 2800.0  # skull
-        assert c[0, 1] == 1560.0  # GM
-        assert c[1, 0] == 1560.0  # WM
+        assert c[0, 0] == 1560.0  # GM
+        assert c[0, 1] == 1560.0  # WM
+        assert c[1, 0] == 2800.0  # skull
         assert c[1, 1] == 1500.0  # background -> water
 
     def test_override_properties(self):
-        labels = np.array([2], dtype=np.int32)
-        custom = {2: {"sound_speed": 2500.0, "density": 1700.0, "attenuation": 3.0}}
+        labels = np.array([6], dtype=np.int32)  # skull
+        custom = {6: {"sound_speed": 2500.0, "density": 1700.0, "attenuation": 3.0}}
         props = map_sci_labels_to_acoustic(labels, properties=custom)
         assert float(props["sound_speed"][0]) == 2500.0
 
