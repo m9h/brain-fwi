@@ -9,9 +9,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from pathlib import Path
+
 from brain_fwi.phantoms.mida import (
     MIDA_TISSUE_GROUPS,
     MIDA_ACOUSTIC_PROPERTIES,
+    center_crop_to_cube,
+    make_mida_phantom,
     map_mida_labels_to_acoustic,
     resample_volume,
 )
@@ -121,3 +125,68 @@ class TestResampling:
         assert result.dtype == np.int32
         # All values should be from the original set
         assert set(np.unique(result)).issubset(set(range(8)))
+
+
+class TestCenterCropToCube:
+    def test_already_cubic(self):
+        vol = np.zeros((10, 10, 10), dtype=np.int32)
+        np.testing.assert_array_equal(center_crop_to_cube(vol), vol)
+
+    def test_anisotropic_crops_to_min(self):
+        """A 20x10x30 volume crops to 10x10x10 around the centre of each axis."""
+        vol = np.arange(20 * 10 * 30, dtype=np.int32).reshape(20, 10, 30)
+        cropped = center_crop_to_cube(vol)
+        assert cropped.shape == (10, 10, 10)
+        # x starts at 5, z starts at 10
+        np.testing.assert_array_equal(cropped, vol[5:15, :, 10:20])
+
+    def test_non_3d_raises(self):
+        with pytest.raises(ValueError):
+            center_crop_to_cube(np.zeros((10, 10), dtype=np.int32))
+
+
+class TestMakeMidaPhantomOnRealData:
+    """Runs on the real MIDA NIfTI if present; skipped otherwise."""
+
+    _path = Path("/data/datasets/MIDAv1-0/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii")
+
+    @pytest.mark.skipif(not _path.exists(),
+                        reason="MIDA NIfTI not on this host")
+    def test_shape_and_acoustic_range(self):
+        labels, c, rho, alpha = make_mida_phantom(
+            self._path, grid_shape=(64, 64, 64), dx=0.003,
+            add_lesion=False,
+        )
+        assert labels.shape == (64, 64, 64)
+        c_arr = np.asarray(c)
+        # Contains skull (cortical ~2800 m/s) and water coupling (1500 m/s).
+        # Internal sinus air (c=343) may or may not survive the 3 mm
+        # downsample depending on anatomy, so the min is either ~343 (air
+        # preserved) or ~1500 (air labels diluted by neighbour voting).
+        assert float(c_arr.max()) >= 2500.0
+        assert float(c_arr.min()) in (343.0, 1500.0) or 343.0 <= float(c_arr.min()) <= 1500.0
+
+    @pytest.mark.skipif(not _path.exists(),
+                        reason="MIDA NIfTI not on this host")
+    def test_water_fill_internal_air_removes_air(self):
+        labels, c, _rho, _alpha = make_mida_phantom(
+            self._path, grid_shape=(64, 64, 64), dx=0.003,
+            add_lesion=False, water_fill_internal_air=True,
+        )
+        c_arr = np.asarray(c)
+        # With internal air water-filled, minimum c should be water, not air
+        assert float(c_arr.min()) >= 1400.0
+
+    @pytest.mark.skipif(not _path.exists(),
+                        reason="MIDA NIfTI not on this host")
+    def test_lesion_injection(self):
+        labels, c, _rho, _alpha = make_mida_phantom(
+            self._path, grid_shape=(64, 64, 64), dx=0.003,
+            add_lesion=True, lesion_radius_m=0.006,
+        )
+        # BrainWeb label 8 = blood (haemorrhage marker)
+        lesion = np.asarray(labels) == 8
+        assert int(lesion.sum()) > 0, "lesion was not injected into the MIDA brain"
+        # Lesion voxels take explicit blood-like acoustic values
+        c_les = np.asarray(c)[lesion]
+        assert np.allclose(c_les, 1584.0, atol=1e-3)

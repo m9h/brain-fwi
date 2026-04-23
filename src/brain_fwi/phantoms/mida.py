@@ -467,3 +467,146 @@ def resample_volume(
         result = np.round(result).astype(volume.dtype)
 
     return result
+
+
+def center_crop_to_cube(volume: np.ndarray) -> np.ndarray:
+    """Centre-crop a 3D volume to a cubic bounding box of ``min(shape)``.
+
+    Preserves the head's native aspect ratio when the subsequent resample
+    to a cubic target grid (e.g. 192^3) would otherwise stretch it.
+    """
+    if volume.ndim != 3:
+        raise ValueError(f"Expected a 3D volume, got shape {volume.shape}")
+    n = min(volume.shape)
+    offsets = tuple((s - n) // 2 for s in volume.shape)
+    slicer = tuple(slice(o, o + n) for o in offsets)
+    return volume[slicer]
+
+
+# ---------------------------------------------------------------------------
+# FWI-ready phantom helper
+# ---------------------------------------------------------------------------
+
+# BrainWeb-style label used to mark the injected haemorrhage (same as the
+# synthetic three-layer phantom in phantoms/synthetic.py).
+_LESION_LABEL_BRAINWEB = 8
+_LESION_C = 1584.0
+_LESION_RHO = 1060.0
+_LESION_ALPHA = 0.2
+
+# Set of MIDA label IDs that represent brain parenchyma where a lesion
+# may be placed — grey matter, white matter, and deep nuclei.
+_MIDA_BRAIN_PARENCHYMA_LABELS = frozenset({
+    2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 20, 21, 99, 100, 116,
+})
+
+
+# MIDA labels that correspond to internal air cavities (sinuses, oral cavity,
+# mastoid, etc). Useful when you want to water-fill them for solver stability.
+_MIDA_INTERNAL_AIR_LABELS = frozenset({26, 27, 28, 29, 30, 31, 85, 97})
+
+
+def make_mida_phantom(
+    path: Path,
+    grid_shape: Tuple[int, int, int],
+    dx: float,
+    add_lesion: bool = True,
+    lesion_offset_m: Tuple[float, float, float] = (-0.02, -0.01, 0.0),
+    lesion_radius_m: float = 0.005,
+    crop_cube: bool = True,
+    water_fill_internal_air: bool = False,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Load MIDA and return an FWI-ready ``(labels, c, rho, alpha)`` tuple.
+
+    The pipeline:
+      1. Load the NIfTI label volume.
+      2. Optionally centre-crop to cube so resample doesn't stretch the head.
+      3. Resample (nearest-neighbour) to the requested ``grid_shape``.
+      4. Inject a simulated haemorrhage inside the brain parenchyma if
+         ``add_lesion=True`` (skipped if the requested location is outside
+         the brain, e.g. the volume has been cropped too aggressively).
+      5. Map labels to acoustic properties via
+         :func:`map_mida_labels_to_acoustic`.
+      6. Replace the background (label 50) with water coupling.
+
+    Returns arrays matching the signature of
+    ``run_full_usct.create_head_phantom`` so this is a drop-in
+    replacement.
+
+    Args:
+        path: MIDA label NIfTI (e.g.
+            ``/data/datasets/MIDAv1-0/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii``).
+        grid_shape: ``(nx, ny, nz)`` target FWI grid.
+        dx: Target grid spacing (m).
+        add_lesion: Whether to inject a parametric haemorrhage.
+        lesion_offset_m: Centre of the lesion relative to the grid centre.
+        lesion_radius_m: Lesion radius in metres.
+        crop_cube: If True, centre-crop to ``min(native_shape)`` before
+            resampling. Prevents aspect-ratio distortion when the target
+            grid is cubic but MIDA native is 480x480x350.
+        water_fill_internal_air: If True, remap MIDA's internal air
+            cavities (sinuses, oral cavity, etc. — labels 26-31, 85, 97)
+            to water. Reduces impedance contrasts that can destabilise
+            pseudospectral solvers at coarse grids. The air is
+            anatomically correct but FWI-unfriendly; default False
+            preserves realism.
+    """
+    labels = load_mida_volume(path)
+    if crop_cube:
+        labels = center_crop_to_cube(labels)
+    labels = resample_volume(labels, tuple(grid_shape), order=0)
+
+    if add_lesion:
+        nx, ny, nz = grid_shape
+        cx, cy, cz = nx / 2, ny / 2, nz / 2
+        lx, ly, lz = lesion_offset_m
+        x, y, z = np.meshgrid(
+            np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij",
+        )
+        lr = np.sqrt(
+            ((x - cx - lx / dx) / (lesion_radius_m / dx)) ** 2
+            + ((y - cy - ly / dx) / (lesion_radius_m / dx)) ** 2
+            + ((z - cz - lz / dx) / (lesion_radius_m / dx)) ** 2
+        )
+        brain_mask = np.isin(labels, list(_MIDA_BRAIN_PARENCHYMA_LABELS))
+        lesion_mask = (lr <= 1.0) & brain_mask
+        if lesion_mask.any():
+            # Use BrainWeb's blood label (8) — outside the MIDA 1-116 range
+            # but honoured by map_mida_labels_to_acoustic's clip, and we
+            # override the properties explicitly below to keep the
+            # interpretation unambiguous.
+            labels = np.where(lesion_mask, _LESION_LABEL_BRAINWEB, labels)
+
+    props = map_mida_labels_to_acoustic(labels)
+    c = np.asarray(props["sound_speed"])
+    rho = np.asarray(props["density"])
+    alpha = np.asarray(props["attenuation"])
+
+    # Explicit lesion acoustic values (BrainWeb blood, matches synthetic phantom)
+    if add_lesion:
+        lesion_mask_np = labels == _LESION_LABEL_BRAINWEB
+        c = np.where(lesion_mask_np, _LESION_C, c)
+        rho = np.where(lesion_mask_np, _LESION_RHO, rho)
+        alpha = np.where(lesion_mask_np, _LESION_ALPHA, alpha)
+
+    # Background (MIDA label 50) -> water coupling. Already handled in
+    # map_mida_labels_to_acoustic via the "water" group, but force it here
+    # in case any out-of-range labels (e.g. interpolation artefacts) slip
+    # through.
+    bg_mask = labels == 50
+    c = np.where(bg_mask, 1500.0, c)
+    rho = np.where(bg_mask, 1000.0, rho)
+    alpha = np.where(bg_mask, 0.0, alpha)
+
+    if water_fill_internal_air:
+        air_mask = np.isin(labels, list(_MIDA_INTERNAL_AIR_LABELS))
+        c = np.where(air_mask, 1500.0, c)
+        rho = np.where(air_mask, 1000.0, rho)
+        alpha = np.where(air_mask, 0.0, alpha)
+
+    return (
+        jnp.asarray(labels),
+        jnp.asarray(c),
+        jnp.asarray(rho),
+        jnp.asarray(alpha),
+    )
