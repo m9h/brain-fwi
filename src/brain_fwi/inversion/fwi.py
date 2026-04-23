@@ -146,9 +146,13 @@ def _velocity_to_params(
 # Disk checkpointing (resume after preemption)
 # ---------------------------------------------------------------------------
 
-def _save_checkpoint(path: Path, band_idx: int, params, opt_state,
+def _save_checkpoint(path: Path, band_idx: int, params,
                      loss_history, velocity_history):
-    """Save FWI state after completing a frequency band."""
+    """Save FWI state after completing a frequency band.
+
+    SGD is memoryless, so opt_state is not persisted — resume re-initialises
+    a fresh optimizer on the saved params.
+    """
     import h5py
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(str(path), "w") as f:
@@ -157,14 +161,9 @@ def _save_checkpoint(path: Path, band_idx: int, params, opt_state,
         f.create_dataset("loss_history", data=np.array(loss_history))
         for i, v in enumerate(velocity_history):
             f.create_dataset(f"velocity_band_{i}", data=np.array(v))
-        # Save Adam state (mu, nu, count) as flat arrays
-        mu, nu = opt_state[0].mu, opt_state[0].nu
-        f.create_dataset("opt_mu", data=np.array(mu))
-        f.create_dataset("opt_nu", data=np.array(nu))
-        f.attrs["opt_count"] = int(opt_state[0].count)
 
 
-def _load_checkpoint(path: Path, learning_rate: float):
+def _load_checkpoint(path: Path):
     """Load FWI state from a previous run. Returns None if no checkpoint."""
     import h5py
     if not path.exists():
@@ -175,18 +174,9 @@ def _load_checkpoint(path: Path, learning_rate: float):
         loss_history = list(f["loss_history"][:])
         velocity_history = [jnp.array(f[f"velocity_band_{i}"][:])
                            for i in range(completed_bands)]
-        mu = jnp.array(f["opt_mu"][:])
-        nu = jnp.array(f["opt_nu"][:])
-        count = jnp.array(int(f.attrs["opt_count"]))
-    # Reconstruct Adam state
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(params)
-    opt_state = (optax.ScaleByAdamState(count=count, mu=mu, nu=nu),
-                 opt_state[1])
     return {
         "completed_bands": completed_bands,
         "params": params,
-        "opt_state": opt_state,
         "loss_history": loss_history,
         "velocity_history": velocity_history,
     }
@@ -391,11 +381,11 @@ def run_fwi(
     # Resume from checkpoint if available
     if config.checkpoint_dir:
         ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
-        ckpt = _load_checkpoint(ckpt_path, config.learning_rate)
+        ckpt = _load_checkpoint(ckpt_path)
         if ckpt is not None:
             start_band = ckpt["completed_bands"]
             params = ckpt["params"]
-            opt_state = ckpt["opt_state"]
+            opt_state = optimizer.init(params)
             loss_history = ckpt["loss_history"]
             velocity_history = ckpt["velocity_history"]
             if config.verbose:
@@ -519,7 +509,7 @@ def run_fwi(
         # Checkpoint to disk for resume after preemption
         if config.checkpoint_dir:
             ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
-            _save_checkpoint(ckpt_path, band_idx, params, opt_state,
+            _save_checkpoint(ckpt_path, band_idx, params,
                            loss_history, velocity_history)
             if config.verbose:
                 print(f"  Checkpoint saved: band {band_idx+1} complete")
