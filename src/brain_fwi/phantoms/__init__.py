@@ -14,6 +14,21 @@ from .tfuscapes import (
     head_mask_from_ct,
     load_tfuscapes_sample,
 )
+from .sci_head import (
+    SCI_ACOUSTIC_PROPERTIES,
+    SCI_LABEL_NAMES,
+    load_sci_head_acoustic,
+    load_sci_head_segmentation,
+    map_sci_labels_to_acoustic,
+)
+from .simnibs import (
+    SIMNIBS_LABEL_NAMES,
+    find_simnibs_tissue_labeling,
+    load_simnibs_acoustic,
+    load_simnibs_segmentation,
+    map_simnibs_labels_to_acoustic,
+    simnibs_acoustic_table,
+)
 from .properties import (
     TISSUE_PROPERTIES,
     map_labels_to_speed,
