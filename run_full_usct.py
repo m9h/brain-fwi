@@ -105,6 +105,15 @@ def main():
     parser.add_argument("--shots", type=int, default=8)
     parser.add_argument("--output", type=str, default="/data/datasets/brain-fwi/brain_usct_results.h5")
     parser.add_argument("--figures", type=str, default="/data/datasets/brain-fwi/brain_usct_figures.png")
+    parser.add_argument(
+        "--phantom", choices=("synthetic", "mida"), default="synthetic",
+        help="synthetic = parametric three-layer ellipsoid; mida = MIDA v1.0 NIfTI",
+    )
+    parser.add_argument(
+        "--mida-path", type=str,
+        default="/data/datasets/MIDAv1-0/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii",
+        help="Path to the MIDA label NIfTI (only used when --phantom mida)",
+    )
     args = parser.parse_args()
 
     N = args.grid_size
@@ -131,18 +140,41 @@ def main():
     print("  STEP 1: Head Phantom")
     print(f"{'='*70}")
     t0 = time.time()
-    labels, c_true, rho, alpha = create_head_phantom(grid_shape, dx)
+    if args.phantom == "synthetic":
+        labels, c_true, rho, alpha = create_head_phantom(grid_shape, dx)
+        tissue_counts = {
+            "Water (coupling)": int(jnp.sum(labels == 0)),
+            "CSF + ventricles": int(jnp.sum(labels == 1)),
+            "Grey matter": int(jnp.sum(labels == 2)),
+            "White matter": int(jnp.sum(labels == 3)),
+            "Scalp": int(jnp.sum(labels == 6)),
+            "Skull (cortical)": int(jnp.sum(labels == 7)),
+            "Skull (trabecular)": int(jnp.sum(labels == 11)),
+            "Lesion (haemorrhage)": int(jnp.sum(labels == 8)),
+        }
+    elif args.phantom == "mida":
+        from brain_fwi.phantoms.mida import make_mida_phantom, MIDA_LABEL_NAMES
+        print(f"  Source:      MIDA v1.0 NIfTI ({args.mida_path})")
+        labels, c_true, rho, alpha = make_mida_phantom(
+            args.mida_path, grid_shape, dx, add_lesion=True,
+        )
+        # MIDA label inventory — show the most populous + the lesion
+        import numpy as np_
+        uniq, counts = np_.unique(np_.asarray(labels), return_counts=True)
+        sorted_pairs = sorted(zip(counts.tolist(), uniq.tolist()), reverse=True)
+        tissue_counts = {}
+        for count, lab in sorted_pairs[:10]:
+            name = (
+                "Lesion (haemorrhage)" if lab == 8
+                else MIDA_LABEL_NAMES.get(int(lab), f"Label {lab}")
+            )
+            tissue_counts[name] = int(count)
+        lesion_count = int(jnp.sum(labels == 8))
+        if lesion_count and "Lesion (haemorrhage)" not in tissue_counts:
+            tissue_counts["Lesion (haemorrhage)"] = lesion_count
+    else:
+        raise ValueError(f"Unknown --phantom {args.phantom!r}")
 
-    tissue_counts = {
-        "Water (coupling)": int(jnp.sum(labels == 0)),
-        "CSF + ventricles": int(jnp.sum(labels == 1)),
-        "Grey matter": int(jnp.sum(labels == 2)),
-        "White matter": int(jnp.sum(labels == 3)),
-        "Scalp": int(jnp.sum(labels == 6)),
-        "Skull (cortical)": int(jnp.sum(labels == 7)),
-        "Skull (trabecular)": int(jnp.sum(labels == 11)),
-        "Lesion (haemorrhage)": int(jnp.sum(labels == 8)),
-    }
     for tissue, count in tissue_counts.items():
         if count > 0:
             print(f"  {tissue:25s}: {count:>8,} voxels")
