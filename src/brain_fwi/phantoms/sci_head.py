@@ -5,20 +5,29 @@ head/brain segmentation published by the University of Utah SCI
 Institute, widely used for EEG / EIT / tDCS forward modelling. The
 segmentation is distributed as an NRRD file produced by Seg3D.
 
-Default label convention (neurojax-compatible, matches Seg3D export):
+Default label convention (verified against the distributed
+``HeadSegmentation.nrrd`` by slice inspection + outer-contact
+analysis — see ``scripts/inspect_sci_head.py``):
 
-    1 = Scalp
-    2 = Skull
-    3 = Sinus / Air cavities
-    4 = CSF
-    5 = Gray matter
-    6 = White matter
-    7 = Eyes
+    1 = Eyes
+    2 = Gray matter (cortical ribbon)
+    3 = White matter (deep, interior)
+    4 = CSF (brain surface layer + ventricles)
+    5 = Sinuses / internal air cavities
+    6 = Skull
+    7 = Scalp (outermost tissue)
     8 = Background (exterior)
+
+This ordering differs from the neurojax EEG conductivity table which
+used (Scalp=1, Skull=2, Sinus=3, CSF=4, GM=5, WM=6, Eyes=7). If you
+are porting analysis code that assumes the neurojax ordering, remap
+the labels explicitly.
 
 Acoustic properties follow the ITRUSST BM3 benchmark (Aubry et al.
 2022) where applicable, with eyes treated as aqueous humour (~water)
-per Duck (1990).
+per Duck (1990). Sinus and Background default to water coupling for
+USCT settings; pass a custom ``properties`` override to keep them
+as real air.
 
 The NRRD loader is a thin wrapper over ``pynrrd``; install it with
 ``uv add pynrrd`` (already in the brain-fwi environment).
@@ -38,13 +47,13 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 SCI_LABEL_NAMES: Dict[int, str] = {
-    1: "Scalp",
-    2: "Skull",
-    3: "Sinus",
+    1: "Eyes",
+    2: "Gray Matter",
+    3: "White Matter",
     4: "CSF",
-    5: "Gray Matter",
-    6: "White Matter",
-    7: "Eyes",
+    5: "Sinus",
+    6: "Skull",
+    7: "Scalp",
     8: "Background",
 }
 
@@ -54,13 +63,13 @@ SCI_LABEL_NAMES: Dict[int, str] = {
 # water rather than air (see ct_to_acoustic in tfuscapes.py for the same
 # pattern).
 SCI_ACOUSTIC_PROPERTIES: Dict[int, Dict[str, float]] = {
-    1: {"sound_speed": 1610.0, "density": 1090.0, "attenuation": 0.8},   # Scalp
-    2: {"sound_speed": 2800.0, "density": 1850.0, "attenuation": 4.0},   # Skull (cortical)
-    3: {"sound_speed": 1500.0, "density": 1000.0, "attenuation": 0.0},   # Sinus -> water coupling
+    1: {"sound_speed": 1532.0, "density": 1005.0, "attenuation": 0.1},   # Eyes
+    2: {"sound_speed": 1560.0, "density": 1040.0, "attenuation": 0.6},   # Gray matter
+    3: {"sound_speed": 1560.0, "density": 1040.0, "attenuation": 0.6},   # White matter
     4: {"sound_speed": 1500.0, "density": 1007.0, "attenuation": 0.002}, # CSF
-    5: {"sound_speed": 1560.0, "density": 1040.0, "attenuation": 0.6},   # Gray matter
-    6: {"sound_speed": 1560.0, "density": 1040.0, "attenuation": 0.6},   # White matter
-    7: {"sound_speed": 1532.0, "density": 1005.0, "attenuation": 0.1},   # Eyes
+    5: {"sound_speed": 1500.0, "density": 1000.0, "attenuation": 0.0},   # Sinus -> water coupling
+    6: {"sound_speed": 2800.0, "density": 1850.0, "attenuation": 4.0},   # Skull (cortical)
+    7: {"sound_speed": 1610.0, "density": 1090.0, "attenuation": 0.8},   # Scalp
     8: {"sound_speed": 1500.0, "density": 1000.0, "attenuation": 0.0},   # Background -> water
 }
 
