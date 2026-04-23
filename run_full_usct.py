@@ -55,66 +55,15 @@ def create_head_phantom(grid_shape, dx):
       - Diploe (trabecular):  ~3mm, label 11, c=2300 m/s, rho=1700
       - Inner cortical table: ~2mm, label 7, c=2800 m/s, rho=1850
     Total skull thickness: ~7mm (realistic adult calvarium).
+
+    Labels come from ``phantoms/synthetic.py:make_three_layer_head``;
+    canonical acoustic properties are assigned here via
+    ``map_labels_to_all`` with water coupling for the background.
     """
-    nx, ny, nz = grid_shape
-    cx, cy, cz = nx // 2, ny // 2, nz // 2
+    from brain_fwi.phantoms.synthetic import make_three_layer_head
 
-    head_a = min(0.095 / dx, cx - 3)
-    head_b = min(0.075 / dx, cy - 3)
-    head_c = min(0.090 / dx, cz - 3)
-
-    x, y, z = jnp.meshgrid(
-        jnp.arange(nx), jnp.arange(ny), jnp.arange(nz), indexing="ij"
-    )
-    r = jnp.sqrt(
-        ((x - cx) / head_a) ** 2 +
-        ((y - cy) / head_b) ** 2 +
-        ((z - cz) / head_c) ** 2
-    )
-
-    # Layer thicknesses (normalised by head semi-axis)
-    scalp_t = 0.003 / (head_a * dx)       # 3mm scalp
-    outer_bone_t = 0.002 / (head_a * dx)   # 2mm outer cortical table
-    diploe_t = 0.003 / (head_a * dx)       # 3mm trabecular/diploe
-    inner_bone_t = 0.002 / (head_a * dx)   # 2mm inner cortical table
-    csf_t = 0.002 / (head_a * dx)          # 2mm subarachnoid space
-    cortex_t = 0.004 / (head_a * dx)       # 4mm cortical ribbon
-
-    r_scalp = 1.0
-    r_outer_bone = r_scalp - scalp_t
-    r_diploe = r_outer_bone - outer_bone_t
-    r_inner_bone = r_diploe - diploe_t
-    r_csf = r_inner_bone - inner_bone_t
-    r_csf_i = r_csf - csf_t
-    r_cortex_i = r_csf_i - cortex_t
-
-    # BrainWeb labels: 6=scalp, 7=cortical bone, 11=trabecular bone,
-    # 1=CSF, 2=GM, 3=WM, 8=blood vessels
-    labels = jnp.zeros(grid_shape, dtype=jnp.int32)
-    labels = jnp.where(r <= r_scalp, 6, labels)          # scalp
-    labels = jnp.where(r <= r_outer_bone, 7, labels)     # outer cortical table
-    labels = jnp.where(r <= r_diploe, 11, labels)        # diploe (trabecular)
-    labels = jnp.where(r <= r_inner_bone, 7, labels)     # inner cortical table
-    labels = jnp.where(r <= r_csf, 1, labels)            # CSF
-    labels = jnp.where(r <= r_csf_i, 2, labels)          # grey matter
-    labels = jnp.where(r <= r_cortex_i, 3, labels)       # white matter
-
-    # Lateral ventricles
-    for y_off in [-0.015 / dx, 0.015 / dx]:
-        vr = jnp.sqrt(
-            ((x - cx) / (0.010 / dx)) ** 2 +
-            ((y - cy - y_off) / (0.008 / dx)) ** 2 +
-            ((z - cz + 0.005 / dx) / (0.025 / dx)) ** 2
-        )
-        labels = jnp.where((vr <= 1.0) & (r <= r_cortex_i), 1, labels)
-
-    # Simulated haemorrhage (1cm diameter, label 8 = blood)
-    lr = jnp.sqrt(
-        ((x - cx + 0.02 / dx) / (0.005 / dx)) ** 2 +
-        ((y - cy + 0.01 / dx) / (0.005 / dx)) ** 2 +
-        ((z - cz) / (0.005 / dx)) ** 2
-    )
-    labels = jnp.where((lr <= 1.0) & (r <= r_cortex_i), 8, labels)
+    labels_np = make_three_layer_head(grid_shape, dx)
+    labels = jnp.asarray(labels_np)
 
     props = map_labels_to_all(labels)
     c = jnp.where(labels == 0, 1500.0, props["sound_speed"])
