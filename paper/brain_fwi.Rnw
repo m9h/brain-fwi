@@ -475,28 +475,125 @@ framework~\citep{Venkatakrishnan2013plugandplay} could leverage
 anatomy-specific denoisers trained on MRI data as implicit priors,
 complementing the explicit physics of j-Wave.
 
+Beyond proximal priors, a recent line of work replaces point-estimate
+FWI with \emph{amortised variational inference} over velocity models.
+WISE~\citep{Yin2024wise} trains conditional normalising flows to
+map physics-informed common-image gathers to posterior samples of
+migration-velocity models, yielding uncertainty quantification at
+inference cost far below classical Bayesian FWI. WISER~\citep{
+Yin2024wiser} extends this with semi-amortised refinement: the
+amortised posterior from a normalising flow is then refined against
+the true wave physics (forward operator and its gradient), closing
+the amortisation gap and supporting multimodal posteriors at full
+model resolution. Both build on the SLIM group's JUDI.jl /
+InvertibleNetworks.jl ecosystem. The subsurface-extensions
+conditioning (common-image gathers) is a seismic-specific construct
+that does not transfer directly to transmission-dominated
+transcranial acquisitions, but WISER's refinement step --- which
+requires only the forward operator and its gradient --- is
+framework-agnostic and would port cleanly onto j-Wave. For medical
+ultrasound this would replace the current single point estimate with
+a posterior over sound-speed fields that exposes confidence in the
+skull--brain boundary reconstruction --- a clinically useful
+quantity.
+
+A complementary approach parameterises the velocity field itself by a
+compact neural network rather than a voxel grid. Sinusoidal implicit
+neural representations (SIREN)~\citep{Sitzmann2020siren} encode a
+field $c(\mathbf{x})$ as $\mathcal{O}(10^4)$ MLP weights instead of
+$\mathcal{O}(10^6)$ voxels, and produce naturally smooth outputs. In
+the FWI setting this reduces the dimensionality of the inverse
+problem by two orders of magnitude, opens the door to simulation-
+based inference (SBI) over weight space, and provides a compact
+target distribution for later score-based or diffusion
+priors~\citep{Sun2023implicit}. Our current pipeline implements SIREN
+as an alternative parameterisation behind the same \texttt{run\_fwi}
+interface used for voxel-grid FWI.
+
 \subsection{Toward physics-informed neural operators}
 
 Physics-informed neural networks~\citep{Raissi2019physics} and
-neural ODEs~\citep{Chen2018neural} represent the next stage:
-incorporating learnable components directly into the
-forward--inverse chain. Universal differential
-equations~\citep{Rackauckas2020universal} augment known physics
-with neural network terms, offering a pathway to learn skull
-attenuation and aberration effects that are difficult to model
-analytically.
+neural ODEs~\citep{Chen2018neural} embed learnable components into
+the forward--inverse chain, and universal differential
+equations~\citep{Rackauckas2020universal} augment known physics with
+neural terms, offering pathways to learn skull attenuation and
+aberration effects that are difficult to model analytically. A more
+recent and directly FWI-relevant thread replaces the forward
+simulator itself --- or its inverse --- with a learned
+\emph{neural operator}.
+
+\paragraph{Fourier neural operators.} Yang et
+al.~\citep{Yang2021neural} trained Fourier neural operators (FNOs)
+to predict the full acoustic wavefield from a velocity model,
+enabling FWI gradients to flow through the FNO by automatic
+differentiation at a small fraction of the cost of a PDE solve.
+Huang et al.~\citep{Huang2025piwi} and Wang \&
+Alkhalifah~\citep{Wang2024physicsFNO} extended this by adding a
+physics-residual term to the training and inference losses, which
+suppresses the artefacts characteristic of purely data-trained FNO
+surrogates. Sun et al.~\citep{Sun2025ambient} showed order-of-
+magnitude acceleration on ambient-noise FWI using Helmholtz-trained
+neural operators. These approaches have been demonstrated at seismic
+scale; their application to transcranial ultrasound is an open
+direction.
+
+\paragraph{DeepONets.} The branch--trunk operator-learning
+architecture~\citep{Lu2021deeponet} has been specialised to FWI in
+two modes. Fourier-DeepONet~\citep{Zhu2023fourierdeeponet} uses an
+FNO decoder to condition on source parameters and regress velocity
+from seismograms directly. DeepONet for FWI~\citep{Nath2025deeponet}
+instead uses the network output as a \emph{starting model} for
+conventional gradient-based FWI, combining fast amortised inversion
+with the fidelity of a physics-based refinement step --- the same
+amortise-then-refine pattern as WISER. A JAX-native implementation
+targeting transcranial imaging does not yet exist and is a natural
+next step for brain-fwi.
+
+\paragraph{Equinox-native operator learning.} The Kidger JAX SciML
+stack~\citep{Kidger2022diffrax} --- Equinox, Diffrax, Lineax,
+Optimistix --- provides the composable building blocks for such
+work. PDEQuinox~\citep{Koehler2024pdequinox} already supplies
+Equinox-native FNOs and U-Nets that can plug directly into a jaxdf
+forward solver without the framework-translation overhead that a
+Julia-based (SLIM) or PyTorch-based (KAUST) implementation would
+incur.
+
+\paragraph{Medical ultrasound with neural operators.} Parallel work
+in the medical imaging community has begun to adopt operator
+learning for ultrasound. Zeng et al.~\citep{Zeng2023nbso} trained a
+neural Born-series operator on 1590 brain and 8000 breast phantoms.
+BrainPuzzle~\citep{Li2022brainpuzzle} couples time-reversal
+acoustics with a transformer--graph-attention reconstructor and has
+been benchmarked favourably against FWI + CNN pipelines on
+transcranial USCT. Kumar et al.~\citep{Kumar2024spinalfus} applied a
+convolutional DeepONet to focused ultrasound in the spinal cord.
+Brain FWI specifically has no published FNO surrogate or warm-start
+method as of this writing; the combination of j-Wave as a
+differentiable physics simulator, SIREN as a compact
+parameterisation, and an Equinox-native FNO surrogate appears to be
+a tractable research direction.
 
 \subsection{Limitations}
 
-At \SI{2}{\milli\metre} spacing, the skull is only $\sim$3.5 voxels
-thick, limiting spatial resolution. The \SI{1}{\milli\metre} full
-preset (\num{192}$^3$) would provide $\sim$7 voxels through the skull
-but requires an A100-class GPU (the GB10 encountered OOM during JIT
-compilation at this scale). Multi-frequency bandpass FWI requires
-further investigation of inter-band loss normalisation. The synthetic
-phantom, while anatomically informed, lacks the heterogeneity of
-real skull bone (variable cortical/trabecular layering, sutures,
-foramina).
+Early runs at \SI{2}{\milli\metre} spacing gave only $\sim$3.5
+voxels through the skull, limiting spatial resolution. The \SI{1}
+{\milli\metre} preset (\num{192}$^3$) now runs on the unified-memory
+NVIDIA GB10 using segmented gradient checkpointing and per-shot
+gradient accumulation; at that spacing the skull is $\sim$7 voxels
+thick and the three ITRUSST-BM3 layers (outer cortical table, diploe,
+inner cortical table) are individually resolved. Multi-frequency
+bandpass FWI still requires further investigation of inter-band
+loss normalisation, and the synthetic ellipsoidal phantom, while
+anatomically informed, lacks some heterogeneity of real skull bone
+(sutures, foramina, subject-specific cortical/trabecular
+thickness variation). The MIDA v1.0 detailed head
+model~\citep{Iacono2015mida} is integrated as a phantom source for
+more realistic anatomy, and inter-subject variability is addressed
+via a dedicated augmentation pipeline (per-tissue property jitter
+and smooth deformation warps) that feeds a Phase-0 training dataset
+for the learning-based extensions described above. In-vivo
+validation and clinically-realistic acquisition noise models are
+deferred.
 
 % ============================================================================
 \section{Software}
