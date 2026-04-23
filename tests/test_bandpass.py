@@ -129,15 +129,13 @@ class TestMultiFrequencyFWI:
             build_domain, build_medium, build_time_axis,
             simulate_shot_sensors, _build_source_signal,
         )
-        from brain_fwi.inversion.fwi import _params_to_velocity, _velocity_to_params
         from brain_fwi.inversion.losses import l2_loss
 
         grid_shape = (32, 32)
         dx = 0.003
-        c_min, c_max = 1400.0, 1800.0
 
         domain = build_domain(grid_shape, dx)
-        ref_medium = build_medium(domain, c_max, 1000.0, pml_size=8)
+        ref_medium = build_medium(domain, 1800.0, 1000.0, pml_size=8)
         time_axis = build_time_axis(ref_medium, cfl=0.3, t_end=30e-6)
         dt = float(time_axis.dt)
         n_samples = int(float(time_axis.t_end) / dt)
@@ -155,16 +153,15 @@ class TestMultiFrequencyFWI:
             true_medium, time_axis, (16, 16), sensor_pos, bp_signal, dt,
         )
 
-        # Gradient w.r.t. perturbed model
-        params = _velocity_to_params(jnp.full(grid_shape, 1480.0), c_min, c_max)
+        # Gradient w.r.t. perturbed model (direct velocity, no reparameterisation)
+        velocity = jnp.full(grid_shape, 1480.0)
 
-        def loss_fn(p):
-            vel = _params_to_velocity(p, c_min, c_max)
-            med = build_medium(domain, vel, jnp.ones(grid_shape) * 1000.0, pml_size=8)
+        def loss_fn(v):
+            med = build_medium(domain, v, jnp.ones(grid_shape) * 1000.0, pml_size=8)
             pred = simulate_shot_sensors(med, time_axis, (16, 16), sensor_pos, bp_signal, dt)
             min_t = min(pred.shape[0], observed.shape[0])
             return l2_loss(pred[:min_t], observed[:min_t])
 
-        loss_val, grad = jax.value_and_grad(loss_fn)(params)
+        loss_val, grad = jax.value_and_grad(loss_fn)(velocity)
         assert jnp.all(jnp.isfinite(grad))
         assert float(jnp.max(jnp.abs(grad))) > 0, "Gradient is zero through bandpass"
