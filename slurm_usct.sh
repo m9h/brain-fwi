@@ -28,12 +28,14 @@ echo "  GPU:  $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "  Started: $(date)"
 echo "=============================================="
 
-# Defaults (override via --export=GRID=192,ELEM=256,ITERS=20)
+# Defaults (override via --export=ALL,GRID=192,ELEM=256,ITERS=20,PHANTOM=mida,PARAM=siren)
 GRID=${GRID:-96}
 ELEM=${ELEM:-128}
 ITERS=${ITERS:-30}
 SHOTS=${SHOTS:-8}
 DX=${DX:-0.002}
+PHANTOM=${PHANTOM:-synthetic}
+PARAM=${PARAM:-voxel}
 
 if [ "$GRID" -ge 192 ]; then
     DX=0.001
@@ -42,11 +44,13 @@ fi
 
 OUTDIR="/data/datasets/brain-fwi"
 mkdir -p "$OUTDIR"
-OUTFILE="${OUTDIR}/brain_usct_${GRID}_${SLURM_JOB_ID}.h5"
-FIGFILE="${OUTDIR}/brain_usct_${GRID}_${SLURM_JOB_ID}.png"
+TAG="${GRID}_${PHANTOM}_${PARAM}"
+OUTFILE="${OUTDIR}/brain_usct_${TAG}_${SLURM_JOB_ID}.h5"
+FIGFILE="${OUTDIR}/brain_usct_${TAG}_${SLURM_JOB_ID}.png"
 
-echo "  Grid: ${GRID}^3, Elements: ${ELEM}, Iters: ${ITERS}/band"
-echo "  Output: ${OUTFILE}"
+echo "  Grid:    ${GRID}^3, Elements: ${ELEM}, Iters: ${ITERS}/band"
+echo "  Phantom: ${PHANTOM}, Parameterisation: ${PARAM}"
+echo "  Output:  ${OUTFILE}"
 echo ""
 
 export JAX_PLATFORMS=cuda
@@ -58,6 +62,8 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
     --iters "$ITERS" \
     --shots "$SHOTS" \
     --dx "$DX" \
+    --phantom "$PHANTOM" \
+    --parameterization "$PARAM" \
     --output "$OUTFILE" \
     --figures "$FIGFILE"
 

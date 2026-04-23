@@ -114,6 +114,18 @@ def main():
         default="/data/datasets/MIDAv1-0/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii",
         help="Path to the MIDA label NIfTI (only used when --phantom mida)",
     )
+    parser.add_argument(
+        "--parameterization", choices=("voxel", "siren"), default="voxel",
+        help="FWI parameterisation: voxel grid (default) or SIREN MLP.",
+    )
+    parser.add_argument(
+        "--siren-pretrain-steps", type=int, default=600,
+        help="SIREN Adam-pretrain steps (ignored for voxel path).",
+    )
+    parser.add_argument(
+        "--siren-lr", type=float, default=1e-3,
+        help="Adam learning rate for SIREN-path FWI.",
+    )
     args = parser.parse_args()
 
     N = args.grid_size
@@ -270,7 +282,7 @@ def main():
         freq_bands=freq_bands,
         n_iters_per_band=args.iters,
         shots_per_iter=args.shots,
-        learning_rate=50.0,  # Max velocity update per iteration (m/s)
+        learning_rate=50.0,  # Max velocity update per iteration (m/s, voxel path)
         c_min=1400.0,
         c_max=c_max_fwi,
         pml_size=10,
@@ -280,6 +292,9 @@ def main():
         mask=head_mask,
         checkpoint_dir=ckpt_dir,
         verbose=True,
+        parameterization=args.parameterization,
+        siren_learning_rate=args.siren_lr,
+        siren_pretrain_steps=args.siren_pretrain_steps,
     )
 
     result = run_fwi(
