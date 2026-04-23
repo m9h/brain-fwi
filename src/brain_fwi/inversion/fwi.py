@@ -23,13 +23,14 @@ Architecture:
   This enforces physical bounds and improves optimization landscape.
 """
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 from ..simulation.forward import (
     build_domain,
@@ -39,6 +40,13 @@ from ..simulation.forward import (
     _build_source_signal,
 )
 from .losses import l2_loss, envelope_loss, multiscale_loss
+from .param_field import (
+    ParameterField,
+    SIRENField,
+    VoxelField,
+    init_siren_from_velocity,
+    init_voxel_from_velocity,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +75,13 @@ class FWIConfig:
         envelope_weight: Weight for envelope term in multiscale loss.
         mask: Optional binary mask for inversion region.
             Gradients outside mask are zeroed (e.g., mask out PML, water).
+        parameterization: "voxel" (classical) or "siren" (learned-friendly MLP).
+            SIREN path yields naturally smooth reconstructions and a much
+            smaller parameter space — the intended basis for later SBI /
+            score-prior / INR-based extensions.
+        siren_hidden, siren_layers, siren_omega, siren_pretrain_steps,
+        siren_pretrain_lr, siren_seed: SIREN architecture/pretrain knobs
+            (unused when parameterization="voxel").
         verbose: Print iteration progress.
     """
     freq_bands: List[Tuple[float, float]] = field(default_factory=lambda: [
@@ -86,6 +101,13 @@ class FWIConfig:
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
     skip_bandpass: bool = False
+    parameterization: Literal["voxel", "siren"] = "voxel"
+    siren_hidden: int = 128
+    siren_layers: int = 3
+    siren_omega: float = 30.0
+    siren_pretrain_steps: int = 1000
+    siren_pretrain_lr: float = 1e-4
+    siren_seed: int = 0
     verbose: bool = True
 
 
@@ -97,12 +119,17 @@ class FWIResult:
         velocity: Final reconstructed sound speed (m/s).
         velocity_history: List of velocity snapshots (one per band).
         loss_history: Loss values per iteration.
-        params: Raw optimization parameters (before reparameterization).
+        params: Raw optimization parameters (voxel path: pre-sigmoid grid;
+            SIREN path: pre-sigmoid field rendered onto the grid).
+        field: Final ParameterField object. For SIREN, callers can save
+            ``field.siren`` weights directly (target artefact for the
+            learning-based augmentation roadmap).
     """
     velocity: jnp.ndarray
     velocity_history: List[jnp.ndarray]
     loss_history: List[float]
     params: jnp.ndarray
+    field: Optional[ParameterField] = None
 
 
 # ---------------------------------------------------------------------------
@@ -314,12 +341,12 @@ def run_fwi(
     n_sources = len(src_positions_grid)
     loss_fn = _get_loss_fn(config.loss_fn, config.envelope_weight)
 
-    # Initialize reparameterized parameters
-    params = _velocity_to_params(initial_velocity, config.c_min, config.c_max)
+    # Initialize ParameterField (voxel grid or SIREN MLP)
+    param_field = _init_param_field(initial_velocity, config)
 
-    # Adam optimizer
+    # Adam optimizer over differentiable leaves only (ignores static fields)
     optimizer = optax.adam(config.learning_rate)
-    opt_state = optimizer.init(params)
+    opt_state = optimizer.init(eqx.filter(param_field, eqx.is_inexact_array))
 
     loss_history = []
     velocity_history = []
@@ -331,6 +358,7 @@ def run_fwi(
         print(f"  Grid: {grid_shape}, dx={dx*1e3:.2f} mm")
         print(f"  Velocity bounds: [{config.c_min:.0f}, {config.c_max:.0f}] m/s")
         print(f"  Loss: {config.loss_fn}")
+        print(f"  Parameterization: {config.parameterization}")
 
     # Pre-compute time axis OUTSIDE the traced function.
     # TimeAxis.from_medium() calls float() which breaks JAX tracing.
@@ -370,14 +398,14 @@ def run_fwi(
             # Accumulate gradients across shots (equivalent to batched but
             # uses O(1 shot) memory instead of O(n_shots)).
             total_loss = 0.0
-            grad_accum = jnp.zeros_like(params)
+            grads_accum = None
 
             for si in shot_indices:
                 src_pos = src_positions_grid[int(si)]
                 obs = bp_observed[int(si)]
 
-                def single_shot_loss(p, _src_pos=src_pos, _obs=obs):
-                    velocity = _params_to_velocity(p, config.c_min, config.c_max)
+                def single_shot_loss(pf, _src_pos=src_pos, _obs=obs):
+                    velocity = pf.to_velocity(config.c_min, config.c_max)
                     domain = build_domain(grid_shape, dx)
                     medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
                     pred = simulate_shot_sensors(
@@ -387,41 +415,100 @@ def run_fwi(
                     min_t = min(pred.shape[0], _obs.shape[0])
                     return loss_fn(pred[:min_t], _obs[:min_t])
 
-                shot_loss, shot_grad = jax.value_and_grad(single_shot_loss)(params)
+                shot_loss, shot_grad = eqx.filter_value_and_grad(single_shot_loss)(param_field)
                 total_loss = total_loss + float(shot_loss)
-                grad_accum = grad_accum + shot_grad
+                grads_accum = (
+                    shot_grad if grads_accum is None
+                    else jax.tree.map(_add_if_array, grads_accum, shot_grad)
+                )
 
-            loss_val = total_loss / len(shot_indices)
-            grad = grad_accum / len(shot_indices)
+            n_shots = len(shot_indices)
+            loss_val = total_loss / n_shots
+            grads = jax.tree.map(lambda g: g / n_shots if _is_array(g) else g, grads_accum)
             loss_history.append(loss_val)
 
-            # Process gradient
-            if config.gradient_smooth_sigma > 0:
-                grad = _smooth_gradient(grad, config.gradient_smooth_sigma)
+            # Gradient smoothing + mask only apply to the voxel path;
+            # SIREN gets its spatial regularity from the architecture.
+            grads = _postprocess_gradient(grads, config)
 
-            if config.mask is not None:
-                grad = grad * config.mask
-
-            # Optimizer update
-            updates, opt_state = optimizer.update(grad, opt_state, params)
-            params = optax.apply_updates(params, updates)
+            # Optimizer update (Equinox-aware)
+            updates, opt_state = optimizer.update(grads, opt_state)
+            param_field = eqx.apply_updates(param_field, updates)
 
             if config.verbose and (it + 1) % 5 == 0:
-                vel = _params_to_velocity(params, config.c_min, config.c_max)
+                vel = param_field.to_velocity(config.c_min, config.c_max)
                 print(f"    Iter {it+1}/{config.n_iters_per_band}: "
                       f"loss={loss_val:.6f}, "
                       f"c=[{float(jnp.min(vel)):.0f}, {float(jnp.max(vel)):.0f}] m/s")
 
         # Save velocity snapshot at end of band
         velocity_history.append(
-            _params_to_velocity(params, config.c_min, config.c_max)
+            param_field.to_velocity(config.c_min, config.c_max)
         )
 
-    final_velocity = _params_to_velocity(params, config.c_min, config.c_max)
+    final_velocity = param_field.to_velocity(config.c_min, config.c_max)
+
+    # Back-compat: expose a raw-params array alongside the full field object.
+    if isinstance(param_field, VoxelField):
+        raw_params = param_field.params
+    else:
+        raw_params = _velocity_to_params(final_velocity, config.c_min, config.c_max)
 
     return FWIResult(
         velocity=final_velocity,
         velocity_history=velocity_history,
         loss_history=loss_history,
-        params=params,
+        params=raw_params,
+        field=param_field,
     )
+
+
+# ---------------------------------------------------------------------------
+# ParameterField helpers
+# ---------------------------------------------------------------------------
+
+def _init_param_field(
+    initial_velocity: jnp.ndarray,
+    config: FWIConfig,
+) -> ParameterField:
+    if config.parameterization == "voxel":
+        return init_voxel_from_velocity(initial_velocity, config.c_min, config.c_max)
+    if config.parameterization == "siren":
+        return init_siren_from_velocity(
+            initial_velocity,
+            c_min=config.c_min,
+            c_max=config.c_max,
+            hidden_dim=config.siren_hidden,
+            n_hidden=config.siren_layers,
+            omega_0=config.siren_omega,
+            pretrain_steps=config.siren_pretrain_steps,
+            learning_rate=config.siren_pretrain_lr,
+            key=jr.PRNGKey(config.siren_seed),
+            verbose=config.verbose,
+        )
+    raise ValueError(
+        f"Unknown parameterization {config.parameterization!r}. "
+        f"Use 'voxel' or 'siren'."
+    )
+
+
+def _is_array(x) -> bool:
+    return isinstance(x, jnp.ndarray) or isinstance(x, jax.Array)
+
+
+def _add_if_array(a, b):
+    if _is_array(a) and _is_array(b):
+        return a + b
+    return a
+
+
+def _postprocess_gradient(grads, config: FWIConfig):
+    """Smooth + mask gradients for the voxel path. No-op for SIREN."""
+    if isinstance(grads, VoxelField):
+        g = grads.params
+        if config.gradient_smooth_sigma > 0:
+            g = _smooth_gradient(g, config.gradient_smooth_sigma)
+        if config.mask is not None:
+            g = g * config.mask
+        return eqx.tree_at(lambda v: v.params, grads, g)
+    return grads
