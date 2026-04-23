@@ -228,16 +228,86 @@ Failures in (1) block dataset release. Failures in (3) block Phase 2.
 
 ---
 
-## 8. Workstream kickoff
+## 8. Related work and positioning
 
-Tracked implementation steps once this design is accepted:
+Two strands of learning-based FWI motivate this pipeline and constrain
+its design choices.
 
-1. Add `scripts/gen_phase0.py` skeleton + YAML config.
+**Amortised variational FWI (SLIM group, Georgia Tech).** WISE
+(Yin et al. 2024, *Geophysics* 89(4) A23, arXiv:2401.06230) trains
+conditional normalising flows to map physics-informed common-image
+gathers to posterior samples of migration-velocity models, yielding
+full uncertainty quantification at near-amortised cost. WISER
+(Yin et al. 2024, *Geophysics*, arXiv:2405.10327) adds a semi-
+amortised refinement step: the amortised CNF posterior is refined
+against the true wave physics, closing the amortisation gap and
+supporting multimodal posteriors at full model resolution. Code:
+[slimgroup/WISE.jl](https://github.com/slimgroup/WISE.jl),
+[slimgroup/WISER.jl](https://github.com/slimgroup/WISER.jl) (Julia,
+built on JUDI.jl + InvertibleNetworks.jl).
+
+The subsurface-extensions conditioning in WISE is a seismic
+construct (common-image gathers from reflection data) that does not
+transfer directly to transcranial ultrasound — brain acquisitions
+are transmission-dominated. WISER's refinement step, which requires
+only the forward operator and its gradient, is physics-agnostic and
+a natural candidate for JAX/j-Wave porting; the Phase-0 dataset
+here is the enabler for training the amortised prior.
+
+**Neural-operator FWI.** Yang et al. (2021, *Seismic Record*) used
+FNOs as differentiable wavefield surrogates to accelerate
+gradient-based FWI. Physics-informed variants (Huang, Wang &
+Alkhalifah 2025, arXiv:2509.08967) add a PDE residual to suppress
+data-only surrogate artefacts. DeepONet variants either regress
+velocity directly (Zhu et al. 2023, Fourier-DeepONet,
+arXiv:2305.17289) or produce a starting model for classical FWI
+(Nath et al. 2025, arXiv:2504.10720). The latter — amortise then
+refine — is the same pattern as WISER, suggesting convergence of
+the two threads.
+
+**Equinox-native operators.** PDEQuinox
+([Ceyron/pdequinox](https://github.com/Ceyron/pdequinox)) provides
+Equinox-native FNOs that plug directly into jaxdf/j-Wave without
+the framework-translation overhead of Julia or PyTorch
+implementations. This is the preferred Phase-4 substrate.
+
+**Medical ultrasound.** Zeng et al. (2023, NBSO, arXiv:2312.15575)
+trained a neural Born-series operator on 1590 brain + 8000 breast
+phantoms; code is not public. BrainPuzzle (Chen et al. 2025,
+arXiv:2510.20029) couples time-reversal acoustics with a
+transformer–graph-attention reconstructor on transcranial USCT.
+Kumar et al. (2024, arXiv:2412.16118) applied convolutional
+DeepONet to focused ultrasound in the spinal cord. No published
+JAX/Equinox FNO trained as a j-Wave surrogate on skull-bearing head
+phantoms exists; the dataset specified in this document is a
+prerequisite for filling that gap.
+
+---
+
+## 9. Workstream kickoff
+
+Tracked implementation steps, annotated with current status
+(2026-04-23):
+
+1. Add `scripts/gen_phase0.py` skeleton + YAML config. **In progress**
+   on `feature/siren-reconciliation` branch.
 2. Write the anatomy augmentation module
-   (`src/brain_fwi/phantoms/augment.py`) — TPS warps + property jitter.
+   (`src/brain_fwi/phantoms/augment.py`) — jittered_properties +
+   random_deformation_warp. **Done** (merged as PR #2).
 3. Extend `generate_observed_data` to emit per-sample metadata.
-4. Zarr writer with manifest update + resume.
+4. Sharded writer with manifest update + resume. **Done** — HDF5
+   implementation in `src/brain_fwi/data/sharded_writer.py` (PR #2).
+   Zarr migration deferred until storage becomes the dominant cost
+   (see §5).
 5. Validation harness (items 1–4 in §6) as pytest `-m phase0_data`.
+6. **New:** SIREN parameterisation in `run_fwi` — direct-velocity +
+   clip (no sigmoid), per-parameterisation optimiser (SGD for voxel,
+   Adam for SIREN). **In progress** on `feature/siren-reconciliation`.
+7. **New:** Phase-4 FNO forward surrogate — PDEQuinox-based, trained
+   on the Phase-0 dataset once it exists. Deferred.
+8. **New:** WISER-style amortise-then-refine posterior over SIREN
+   weight space. Deferred until Phase-0 dataset + FNO surrogate
+   land.
 
 Review gate: checkpoint the design doc + validation results before
 running the full 10⁴ batch on DGX.
