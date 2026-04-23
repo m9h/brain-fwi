@@ -1,28 +1,25 @@
 """Full Waveform Inversion engine.
 
 Implements gradient-based FWI using JAX automatic differentiation through
-j-Wave's pseudospectral solver. Follows the design patterns of:
+j-Wave's pseudospectral solver. Two parameterisations of the sound-speed
+field are supported behind a shared ``run_fwi`` entry point:
 
-  - j-Wave FWI notebook: Autodiff gradients, Hilbert envelope loss,
-    reparameterized velocity, gradient smoothing
-  - Stride: Multi-frequency banding, stochastic source selection,
-    model bounds, gradient processing pipeline
+  - ``voxel`` (default): classical voxel grid. Optimises directly in m/s
+    using SGD with max-norm gradient normalisation + Gaussian gradient
+    smoothing + optional water mask. Bounds enforced by clip after each
+    update. This is the production path at 192^3.
+  - ``siren``: coordinate-based sinusoidal MLP (Sitzmann 2020). ~10^4
+    weights represent the whole field. Optimised with Adam on MLP weights;
+    no gradient smoothing/normalisation (architecture handles regularity,
+    Adam handles per-parameter scaling). Velocity clipped inside
+    ``SIRENField.to_velocity``.
 
-Key innovation: the entire gradient computation is handled by JAX autodiff
-(jax.grad through simulate_wave_propagation), rather than hand-coded
-adjoint operators as in Stride/Devito. This enables:
-  1. Exact gradients with zero implementation effort
-  2. Higher-order optimization (L-BFGS via Optax)
-  3. Easy integration with neural networks (learned regularization)
-  4. Direct use of sbi4dwi's SBI pipeline for posterior estimation
-
-Architecture:
-  FWIConfig → run_fwi() → FWIResult
-  The velocity model is reparameterized as:
-    c(x) = c_min + (c_max - c_min) * sigmoid(params(x))
-  This enforces physical bounds and improves optimization landscape.
+Both paths share forward simulation, frequency banding, per-shot gradient
+accumulation, and checkpointing. They differ only in parameterisation,
+optimiser choice, and gradient post-processing.
 """
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -30,7 +27,7 @@ import optax
 import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 from ..simulation.forward import (
     build_domain,
@@ -40,6 +37,13 @@ from ..simulation.forward import (
     _build_source_signal,
 )
 from .losses import l2_loss, envelope_loss, multiscale_loss
+from .param_field import (
+    ParameterField,
+    SIRENField,
+    VoxelField,
+    init_siren_from_velocity,
+    init_voxel_from_velocity,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +86,7 @@ class FWIConfig:
     ])
     n_iters_per_band: int = 30
     shots_per_iter: int = 4
-    learning_rate: float = 50.0  # Max velocity update per iteration (m/s)
+    learning_rate: float = 50.0  # Max velocity update per iteration (m/s), voxel path
     c_min: float = 1400.0
     c_max: float = 3200.0
     pml_size: int = 20
@@ -96,6 +100,23 @@ class FWIConfig:
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
     verbose: bool = True
 
+    # --- Parameterisation ---
+    # "voxel" (default): dense grid, SGD + max-norm grad + smoothing + mask.
+    # "siren":           MLP over coordinates, Adam on weights. Ignores
+    #                    gradient_smooth_sigma and mask (SIREN is smooth by
+    #                    construction; mask doesn't have a clean analogue
+    #                    on MLP weights).
+    parameterization: Literal["voxel", "siren"] = "voxel"
+
+    # SIREN knobs (unused when parameterization="voxel").
+    siren_hidden: int = 128
+    siren_layers: int = 3
+    siren_omega: float = 30.0
+    siren_pretrain_steps: int = 1000
+    siren_pretrain_lr: float = 1e-3
+    siren_learning_rate: float = 1e-3  # Adam lr on MLP weights during FWI
+    siren_seed: int = 0
+
 
 @dataclass
 class FWIResult:
@@ -105,41 +126,53 @@ class FWIResult:
         velocity: Final reconstructed sound speed (m/s).
         velocity_history: List of velocity snapshots (one per band).
         loss_history: Loss values per iteration.
-        params: Raw optimization parameters (before reparameterization).
+        params: Raw optimisation parameters. For the voxel path this is
+            ``field.params`` (an m/s array); for SIREN it's a rendered
+            voxel copy of the final velocity field for back-compat.
+        field: Final ParameterField object. For SIREN, callers can save
+            the SIREN weights directly as the compact theta representation
+            for the Phase-0 dataset / downstream SBI.
     """
     velocity: jnp.ndarray
     velocity_history: List[jnp.ndarray]
     loss_history: List[float]
     params: jnp.ndarray
+    field: Optional[ParameterField] = None
 
 
 # ---------------------------------------------------------------------------
-# Reparameterization
+# Parameterisation dispatch
 # ---------------------------------------------------------------------------
 
-def _params_to_velocity(
-    params: jnp.ndarray,
-    c_min: float,
-    c_max: float,
-) -> jnp.ndarray:
-    """Convert unconstrained parameters to bounded sound speed.
+def _init_param_field(
+    initial_velocity: jnp.ndarray,
+    config: "FWIConfig",
+) -> ParameterField:
+    """Build a ``ParameterField`` for the configured parameterisation.
 
-    c(x) = c_min + (c_max - c_min) * sigmoid(params(x))
+    Voxel path stores velocity directly. SIREN path runs an Adam
+    pretrain to regress the MLP towards the initial velocity (normalised
+    to O(1)) before FWI begins.
     """
-    return c_min + (c_max - c_min) * jax.nn.sigmoid(params)
-
-
-def _velocity_to_params(
-    velocity: jnp.ndarray,
-    c_min: float,
-    c_max: float,
-) -> jnp.ndarray:
-    """Convert sound speed to unconstrained parameters (inverse sigmoid)."""
-    # Clip to avoid log(0) or log(inf)
-    v_clipped = jnp.clip(velocity, c_min + 1.0, c_max - 1.0)
-    normalized = (v_clipped - c_min) / (c_max - c_min)
-    # Inverse sigmoid = logit
-    return jnp.log(normalized / (1.0 - normalized))
+    if config.parameterization == "voxel":
+        return init_voxel_from_velocity(initial_velocity, config.c_min, config.c_max)
+    if config.parameterization == "siren":
+        return init_siren_from_velocity(
+            initial_velocity,
+            c_min=config.c_min,
+            c_max=config.c_max,
+            hidden_dim=config.siren_hidden,
+            n_hidden=config.siren_layers,
+            omega_0=config.siren_omega,
+            pretrain_steps=config.siren_pretrain_steps,
+            learning_rate=config.siren_pretrain_lr,
+            key=jr.PRNGKey(config.siren_seed),
+            verbose=config.verbose,
+        )
+    raise ValueError(
+        f"Unknown parameterization {config.parameterization!r}; "
+        f"expected 'voxel' or 'siren'."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +391,18 @@ def run_fwi(
     if key is None:
         key = jr.PRNGKey(0)
 
+    if config.parameterization == "siren":
+        return _run_fwi_siren(
+            observed_data, initial_velocity, density, dx,
+            src_positions_grid, sensor_positions_grid, source_signal,
+            dt, t_end, config, key,
+        )
+    if config.parameterization != "voxel":
+        raise ValueError(
+            f"Unknown parameterization {config.parameterization!r}; "
+            f"expected 'voxel' or 'siren'."
+        )
+
     grid_shape = initial_velocity.shape
     n_sources = len(src_positions_grid)
     loss_fn = _get_loss_fn(config.loss_fn, config.envelope_weight)
@@ -519,4 +564,153 @@ def run_fwi(
         velocity_history=velocity_history,
         loss_history=loss_history,
         params=params,
+        field=VoxelField(params=params),
     )
+
+
+# ---------------------------------------------------------------------------
+# SIREN path
+# ---------------------------------------------------------------------------
+
+def _run_fwi_siren(
+    observed_data: jnp.ndarray,
+    initial_velocity: jnp.ndarray,
+    density: jnp.ndarray,
+    dx: float,
+    src_positions_grid: list,
+    sensor_positions_grid: Tuple,
+    source_signal: jnp.ndarray,
+    dt: float,
+    t_end: float,
+    config: FWIConfig,
+    key: jax.Array,
+) -> FWIResult:
+    """FWI with a SIREN-parameterised velocity field.
+
+    Differences from the voxel path:
+      - ``field`` is a ``SIRENField`` (Equinox module) pretrained against
+        ``initial_velocity``.
+      - Gradients come from ``eqx.filter_value_and_grad`` and are applied
+        with Adam to MLP weights (no max-norm normalisation, no Gaussian
+        smoothing, no mask — SIREN is smooth by construction).
+      - No disk checkpoint on this path yet (pytree serialisation via
+        ``eqx.tree_serialise_leaves`` is planned).
+    """
+    grid_shape = initial_velocity.shape
+    n_sources = len(src_positions_grid)
+    loss_fn = _get_loss_fn(config.loss_fn, config.envelope_weight)
+
+    field = _init_param_field(initial_velocity, config)
+
+    optimizer = optax.adam(config.siren_learning_rate)
+    opt_state = optimizer.init(eqx.filter(field, eqx.is_inexact_array))
+
+    loss_history: List[float] = []
+    velocity_history: List[jnp.ndarray] = []
+
+    if config.verbose:
+        print(f"FWI: {len(config.freq_bands)} frequency bands, "
+              f"{config.n_iters_per_band} iters/band, "
+              f"{config.shots_per_iter} shots/iter")
+        print(f"  Grid: {grid_shape}, dx={dx*1e3:.2f} mm")
+        print(f"  Velocity bounds: [{config.c_min:.0f}, {config.c_max:.0f}] m/s")
+        print(f"  Loss: {config.loss_fn}")
+        print(f"  Parameterisation: SIREN "
+              f"(hidden={config.siren_hidden}, layers={config.siren_layers}, "
+              f"omega={config.siren_omega:g}), Adam lr={config.siren_learning_rate:g}")
+
+    # Pre-compute time axis with a reference medium at c_max for CFL stability.
+    ref_domain = build_domain(grid_shape, dx)
+    ref_medium = build_medium(ref_domain, config.c_max, 1000.0, pml_size=config.pml_size)
+    fixed_time_axis = build_time_axis(ref_medium, cfl=config.cfl, t_end=t_end)
+
+    for band_idx, (fmin, fmax) in enumerate(config.freq_bands):
+        if config.verbose:
+            print(f"\n  Band {band_idx+1}/{len(config.freq_bands)}: "
+                  f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz")
+
+        if config.skip_bandpass:
+            bp_signal = source_signal
+            bp_observed = observed_data
+        else:
+            bp_signal = _bandpass_signal(source_signal, dt, fmin, fmax)
+            bp_observed = jax.vmap(
+                lambda d: jax.vmap(lambda col: _bandpass_signal(col, dt, fmin, fmax))(d.T).T
+            )(observed_data)
+
+        for it in range(config.n_iters_per_band):
+            key, subkey = jr.split(key)
+
+            if config.shots_per_iter >= n_sources:
+                shot_indices = jnp.arange(n_sources)
+            else:
+                shot_indices = jr.choice(
+                    subkey, n_sources, shape=(config.shots_per_iter,), replace=False
+                )
+            shot_indices = np.array(shot_indices)
+
+            use_checkpoint = all(s >= 128 for s in grid_shape)
+
+            total_loss = 0.0
+            grads_accum = None
+
+            for si in shot_indices:
+                src_pos = src_positions_grid[int(si)]
+                obs = bp_observed[int(si)]
+
+                def single_shot_loss(f, _src_pos=src_pos, _obs=obs):
+                    velocity = f.to_velocity(config.c_min, config.c_max)
+                    domain = build_domain(grid_shape, dx)
+                    medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
+                    pred = simulate_shot_sensors(
+                        medium, fixed_time_axis, _src_pos, sensor_positions_grid,
+                        bp_signal, dt, checkpointed=use_checkpoint,
+                    )
+                    min_t = min(pred.shape[0], _obs.shape[0])
+                    return loss_fn(pred[:min_t], _obs[:min_t])
+
+                shot_loss, shot_grad = eqx.filter_value_and_grad(single_shot_loss)(field)
+                total_loss = total_loss + float(shot_loss)
+                if grads_accum is None:
+                    grads_accum = shot_grad
+                else:
+                    grads_accum = jax.tree.map(_add_if_array, grads_accum, shot_grad)
+
+            n_shots = len(shot_indices)
+            loss_val = total_loss / n_shots
+            grads = jax.tree.map(
+                lambda g: g / n_shots if eqx.is_inexact_array(g) else g,
+                grads_accum,
+            )
+            loss_history.append(loss_val)
+
+            updates, opt_state = optimizer.update(grads, opt_state)
+            field = eqx.apply_updates(field, updates)
+
+            if config.verbose and (it + 1) % 5 == 0:
+                vel = field.to_velocity(config.c_min, config.c_max)
+                print(f"    Iter {it+1}/{config.n_iters_per_band}: "
+                      f"loss={loss_val:.6f}, "
+                      f"c=[{float(jnp.min(vel)):.0f}, {float(jnp.max(vel)):.0f}] m/s")
+
+        velocity_history.append(field.to_velocity(config.c_min, config.c_max))
+
+        if config.checkpoint_dir and config.verbose:
+            # SIREN checkpointing deferred — needs eqx.tree_serialise_leaves
+            # path that handles MLP weights. Voxel path is still supported.
+            print(f"  (SIREN checkpoint not yet implemented; band {band_idx+1} result held in memory)")
+
+    final_velocity = field.to_velocity(config.c_min, config.c_max)
+    return FWIResult(
+        velocity=final_velocity,
+        velocity_history=velocity_history,
+        loss_history=loss_history,
+        params=final_velocity,
+        field=field,
+    )
+
+
+def _add_if_array(a, b):
+    if eqx.is_inexact_array(a) and eqx.is_inexact_array(b):
+        return a + b
+    return a
