@@ -75,6 +75,7 @@ source = { editable = "." }
 dependencies = [
     { name = "brainweb-dl" },
     { name = "equinox" },
+    { name = "flowjax" },
     { name = "h5py" },
     { name = "jax" },
     { name = "jaxdf" },
@@ -119,6 +120,7 @@ dev = [
 requires-dist = [
     { name = "brainweb-dl", specifier = ">=0.3.0" },
     { name = "equinox", specifier = ">=0.11.0" },
+    { name = "flowjax", specifier = ">=17.0" },
     { name = "furo", marker = "extra == 'docs'" },
     { name = "h5py", specifier = ">=3.8.0" },
     { name = "jax", specifier = ">=0.5.0" },
@@ -410,6 +412,24 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622, upload-time = "2025-11-12T09:56:37.75Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708, upload-time = "2025-11-12T09:56:36.333Z" },
+]
+
+[[package]]
+name = "flowjax"
+version = "19.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "equinox" },
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "lineax" },
+    { name = "optax" },
+    { name = "paramax" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/37/375042415ab43e26cea0cc3138f29767d09cb2506ed1cbb7d17f118f7112/flowjax-19.1.0.tar.gz", hash = "sha256:0c22ace574ec9e22eac9a1abc2ab84264d5d7634a6b648a522575468cee89bcf", size = 477188, upload-time = "2026-02-21T13:47:38.187Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/19/112666688ab1b389e2b5b463848a8b1a34846e2e2a15e0284fa17c7c5a8a/flowjax-19.1.0-py3-none-any.whl", hash = "sha256:9ec9e08eb8e4956ae99d3261228df16096cb705dedec553108a0c22b35b5372d", size = 61388, upload-time = "2026-02-21T13:47:36.365Z" },
 ]
 
 [[package]]
@@ -876,6 +896,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/48/44/2b5b95b7aa39fb2d8d9d956e0f3d5d45aef2ae1d942d4c3ffac2f9cfed1a/kiwisolver-1.5.0-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:be4a51a55833dc29ab5d7503e7bcb3b3af3402d266018137127450005cdfe737", size = 79892, upload-time = "2026-03-09T13:15:49.694Z" },
     { url = "https://files.pythonhosted.org/packages/52/7d/7157f9bba6b455cfb4632ed411e199fc8b8977642c2b12082e1bd9e6d173/kiwisolver-1.5.0-pp311-pypy311_pp73-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:daae526907e262de627d8f70058a0f64acc9e2641c164c99c8f594b34a799a16", size = 77603, upload-time = "2026-03-09T13:15:50.945Z" },
     { url = "https://files.pythonhosted.org/packages/0a/dd/8050c947d435c8d4bc94e3252f4d8bb8a76cfb424f043a8680be637a57f1/kiwisolver-1.5.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:59cd8683f575d96df5bb48f6add94afc055012c29e28124fcae2b63661b9efb1", size = 73558, upload-time = "2026-03-09T13:15:52.112Z" },
+]
+
+[[package]]
+name = "lineax"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "equinox" },
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/35/d6/4e28416a6fe58dd6bc7565b1ffa330f4d0ba7d74212642b1b734c511299e/lineax-0.1.0.tar.gz", hash = "sha256:5f1a8f060142af2cdbf7d66b99e8d3071c3aa734b677df6339df4b4c4c0554d2", size = 50209, upload-time = "2026-01-27T21:17:26.652Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/0c/2ed47112fc1958a0a81c9b015d4e1861953a1ec3a17b081c0180a25ce82c/lineax-0.1.0-py3-none-any.whl", hash = "sha256:f00911c6b07d427c4835db46856970c8348bc82a035b51f4386ad09382af957a", size = 74600, upload-time = "2026-01-27T21:17:25.33Z" },
 ]
 
 [[package]]
@@ -1529,6 +1564,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
+]
+
+[[package]]
+name = "paramax"
+version = "0.0.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "equinox" },
+    { name = "jax" },
+    { name = "jaxtyping" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/ea/291616b6007b274a677baa984c2886638b4f3a64d4c40943687c3b78ef63/paramax-0.0.5.tar.gz", hash = "sha256:b6710faeb6534f00f44c49f7fff80ebe9364d23636d6e62985ef6cb9b4e60b31", size = 11351, upload-time = "2026-01-23T19:00:46.859Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f6/f9/57a9a2b706e706cdf89c46e2a3875c9a63b4824c7327d980799f11a49aa2/paramax-0.0.5-py3-none-any.whl", hash = "sha256:c1184d6eadb323588deaaef883c78dbbe4a896376517845b87e19c6108dad707", size = 7757, upload-time = "2026-01-23T19:00:45.273Z" },
 ]
 
 [[package]]
