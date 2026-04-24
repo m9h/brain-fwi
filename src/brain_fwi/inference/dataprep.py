@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any, Mapping, Union
+from typing import Any, List, Literal, Mapping, Tuple, Union
 
 import equinox as eqx
 import jax
@@ -75,3 +75,83 @@ def theta_from_sample(sample: Mapping[str, Any]) -> np.ndarray:
     siren = siren_from_sample(sample)
     leaves = jax.tree.leaves(eqx.filter(siren, eqx.is_inexact_array))
     return np.concatenate([np.asarray(l).ravel() for l in leaves])
+
+
+# ---------------------------------------------------------------------------
+# Summary statistics on observed_data
+# ---------------------------------------------------------------------------
+
+SummaryMethod = Literal["max_abs"]
+
+
+def summary_d_from_sample(
+    sample: Mapping[str, Any],
+    method: SummaryMethod = "max_abs",
+) -> np.ndarray:
+    """Reduce ``sample['observed_data']`` to a flat NPE-input feature vector.
+
+    Phase-0 ``observed_data`` has shape ``(N_src, N_t, N_recv)`` — too
+    large for a normalizing flow to consume directly. This returns a
+    summary whose shape is independent of ``N_t``, so different datasets
+    produce d-vectors in a fixed coordinate system.
+
+    Methods:
+        ``"max_abs"`` — peak absolute pressure per (source, receiver)
+            pair, flattened to shape ``(N_src * N_recv,)``. Simplest
+            useful summary; preserves source/receiver structure without
+            the time-axis explosion. Insufficient for full FWI-quality
+            inference but good enough for Phase 2 plumbing validation.
+    """
+    if "observed_data" not in sample:
+        raise KeyError("sample missing required field 'observed_data'")
+
+    obs = np.asarray(sample["observed_data"])
+    if method == "max_abs":
+        return np.max(np.abs(obs), axis=1).ravel().astype(np.float32)
+    raise ValueError(f"unknown summary method {method!r}")
+
+
+# ---------------------------------------------------------------------------
+# Matrix building
+# ---------------------------------------------------------------------------
+
+def build_theta_d_matrix(
+    reader,
+    d_method: SummaryMethod = "max_abs",
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """Iterate a ``ShardedReader`` and stack ``(theta, d)`` rows.
+
+    Args:
+        reader: Iterable yielding sample dicts with ``sample_id``,
+            ``siren_weights_bytes``, ``siren_arch``, and
+            ``observed_data`` fields (typically a
+            :class:`brain_fwi.data.ShardedReader`).
+        d_method: Summary statistic for the observation reduction.
+
+    Returns:
+        Tuple ``(theta, d, sample_ids)``:
+          - ``theta`` is ``(N, theta_dim)`` float32
+          - ``d`` is ``(N, d_dim)`` float32
+          - ``sample_ids`` is a list of length ``N`` preserving reader order.
+    """
+    theta_rows: List[np.ndarray] = []
+    d_rows: List[np.ndarray] = []
+    ids: List[str] = []
+
+    for sample in reader:
+        theta_rows.append(theta_from_sample(sample).astype(np.float32))
+        d_rows.append(summary_d_from_sample(sample, method=d_method))
+        ids.append(str(sample["sample_id"]))
+
+    if not theta_rows:
+        return (
+            np.zeros((0, 0), dtype=np.float32),
+            np.zeros((0, 0), dtype=np.float32),
+            [],
+        )
+
+    return (
+        np.stack(theta_rows, axis=0),
+        np.stack(d_rows, axis=0),
+        ids,
+    )
