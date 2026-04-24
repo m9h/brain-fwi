@@ -180,24 +180,38 @@ def _init_param_field(
 # ---------------------------------------------------------------------------
 
 def _save_checkpoint(path: Path, band_idx: int, params,
-                     loss_history, velocity_history):
+                     loss_history, velocity_history,
+                     grid_shape=None):
     """Save FWI state after completing a frequency band.
 
     SGD is memoryless, so opt_state is not persisted — resume re-initialises
-    a fresh optimizer on the saved params.
+    a fresh optimizer on the saved params. ``grid_shape`` is stamped as an
+    HDF5 attribute so :func:`_load_checkpoint` can refuse a resume that
+    targets a different configuration (as happened in jobs 917 and 919,
+    where a stale 192^3 checkpoint was loaded into an unrelated run).
     """
     import h5py
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(str(path), "w") as f:
         f.attrs["completed_bands"] = band_idx + 1
+        if grid_shape is not None:
+            f.attrs["grid_shape"] = np.asarray(grid_shape, dtype=np.int32)
         f.create_dataset("params", data=np.array(params))
         f.create_dataset("loss_history", data=np.array(loss_history))
         for i, v in enumerate(velocity_history):
             f.create_dataset(f"velocity_band_{i}", data=np.array(v))
 
 
-def _load_checkpoint(path: Path):
-    """Load FWI state from a previous run. Returns None if no checkpoint."""
+def _load_checkpoint(path: Path, expected_grid_shape=None):
+    """Load FWI state from a previous run.
+
+    Returns ``None`` if no checkpoint exists. Raises ``ValueError`` if a
+    checkpoint is present but its ``params`` shape (or stamped
+    ``grid_shape`` attribute) does not match ``expected_grid_shape`` —
+    this is what happened in 917/919: a stale 192^3 checkpoint leaked
+    into a 96^3 run (917, shape-broadcast crash) and into a fresh 192^3
+    MIDA run (919, NaN from wrong-phantom initial velocity).
+    """
     import h5py
     if not path.exists():
         return None
@@ -207,6 +221,20 @@ def _load_checkpoint(path: Path):
         loss_history = list(f["loss_history"][:])
         velocity_history = [jnp.array(f[f"velocity_band_{i}"][:])
                            for i in range(completed_bands)]
+        stamped_shape = None
+        if "grid_shape" in f.attrs:
+            stamped_shape = tuple(int(x) for x in f.attrs["grid_shape"])
+
+    if expected_grid_shape is not None:
+        expected = tuple(int(x) for x in expected_grid_shape)
+        actual = tuple(params.shape)
+        if actual != expected or (stamped_shape is not None and stamped_shape != expected):
+            raise ValueError(
+                f"Checkpoint at {path} has params shape {actual} "
+                f"(stamped grid {stamped_shape}) but current run expects "
+                f"{expected}. Delete the stale checkpoint or point "
+                f"`checkpoint_dir` at a run-specific path."
+            )
     return {
         "completed_bands": completed_bands,
         "params": params,
@@ -426,7 +454,7 @@ def run_fwi(
     # Resume from checkpoint if available
     if config.checkpoint_dir:
         ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
-        ckpt = _load_checkpoint(ckpt_path)
+        ckpt = _load_checkpoint(ckpt_path, expected_grid_shape=grid_shape)
         if ckpt is not None:
             start_band = ckpt["completed_bands"]
             params = ckpt["params"]
@@ -555,7 +583,8 @@ def run_fwi(
         if config.checkpoint_dir:
             ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
             _save_checkpoint(ckpt_path, band_idx, params,
-                           loss_history, velocity_history)
+                           loss_history, velocity_history,
+                           grid_shape=grid_shape)
             if config.verbose:
                 print(f"  Checkpoint saved: band {band_idx+1} complete")
 

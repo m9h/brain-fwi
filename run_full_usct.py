@@ -272,8 +272,11 @@ def main():
 
     c_init = jnp.full(grid_shape, 1500.0, dtype=jnp.float32)
 
-    # Checkpoint dir sits next to the output file for resume after preemption
-    ckpt_dir = str(Path(args.output).parent / "checkpoints")
+    # Checkpoint dir sits next to the output file for resume after preemption.
+    # Must be unique per configuration (grid size, phantom, parameterisation)
+    # to avoid stale-checkpoint leakage between unrelated runs — cause of the
+    # 917 shape-broadcast crash and 919 NaN failure (2026-04-23 overnight).
+    ckpt_dir = str(Path(args.output).parent / "checkpoints" / Path(args.output).stem)
 
     # Water mask: only update voxels inside the head (labels > 0)
     head_mask = (labels > 0).astype(jnp.float32)
