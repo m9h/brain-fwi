@@ -34,6 +34,14 @@ import jax.random as jr
 import optax
 
 
+def _to_typed_key(key: jax.Array) -> jax.Array:
+    """flowjax requires new-style typed PRNG keys; legacy ``PRNGKey`` output
+    is accepted transparently by wrapping it."""
+    if jnp.issubdtype(key.dtype, jnp.unsignedinteger):
+        return jax.random.wrap_key_data(key)
+    return key
+
+
 class ConditionalFlow(eqx.Module):
     """Conditional normalizing flow `q(theta | d)` for NPE.
 
@@ -65,7 +73,7 @@ class ConditionalFlow(eqx.Module):
         self.theta_dim = theta_dim
         self.d_dim = d_dim
         self.flow = masked_autoregressive_flow(
-            key=key,
+            key=_to_typed_key(key),
             base_dist=Normal(jnp.zeros(theta_dim)),
             cond_dim=d_dim,
             transformer=RationalQuadraticSpline(knots=knots, interval=interval),
@@ -85,7 +93,7 @@ class ConditionalFlow(eqx.Module):
         n_samples: int = 1,
     ) -> jnp.ndarray:
         """Sample theta from `q(theta | d)`."""
-        return self.flow.sample(key, (n_samples,), condition=d)
+        return self.flow.sample(_to_typed_key(key), (n_samples,), condition=d)
 
 
 def train_npe(

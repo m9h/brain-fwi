@@ -21,10 +21,17 @@ app = modal.App("brain-fwi-npe-smoke")
 
 GIT_BRANCH = "feature/phase2-npe"
 
+# CACHE_BUST: bump this string to force Modal to rebuild the image (e.g.,
+# after pushing a fix to the branch). Modal fingerprints the build spec,
+# not what `git clone` fetches at runtime, so without this the cached
+# image keeps the old cloned source indefinitely.
+CACHE_BUST = "2026-04-24-key-fix"
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "build-essential")
     .pip_install("uv")
+    .env({"BRAIN_FWI_CACHE_BUST": CACHE_BUST})
     .run_commands(
         f"git clone --depth 1 --branch {GIT_BRANCH} "
         f"https://github.com/m9h/brain-fwi.git /opt/brain-fwi",
