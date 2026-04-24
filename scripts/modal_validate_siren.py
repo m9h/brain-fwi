@@ -43,10 +43,9 @@ image = (
     .run_commands(
         f"git clone --depth 1 --branch {GIT_BRANCH} "
         f"https://github.com/m9h/brain-fwi.git /opt/brain-fwi",
-        "cd /opt/brain-fwi && uv venv --system-site-packages /opt/venv",
-        "cd /opt/brain-fwi && /opt/venv/bin/uv pip install -e '.[cuda12]'",
+        # System-wide install — ephemeral container, no need for a venv.
+        "cd /opt/brain-fwi && uv pip install --system -e '.[cuda12]'",
     )
-    .env({"PATH": "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin"})
 )
 
 # Persistent output volume — inspect results with `modal volume ls` /
@@ -78,7 +77,7 @@ def run_validation():
     siren_out = "/results/siren.h5"
 
     base_args = [
-        "/opt/venv/bin/python", "-u", f"{repo}/run_full_usct.py",
+        "python", "-u", f"{repo}/run_full_usct.py",
         "--grid-size", str(GRID_SIZE),
         "--n-elements", str(N_ELEMENTS),
         "--iters", str(ITERS_PER_BAND),
@@ -106,7 +105,7 @@ def run_validation():
     print("  Comparison (regional RMSE)")
     print("=" * 70)
     subprocess.run(
-        ["/opt/venv/bin/python", "-u",
+        ["python", "-u",
          f"{repo}/scripts/validate_siren_vs_voxel.py",
          "--voxel", voxel_out,
          "--siren", siren_out,
