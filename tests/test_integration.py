@@ -19,11 +19,7 @@ from brain_fwi.simulation.forward import (
     _build_source_signal,
     _to_array,
 )
-from brain_fwi.inversion.fwi import (
-    _params_to_velocity,
-    _velocity_to_params,
-    FWIConfig,
-)
+from brain_fwi.inversion.fwi import FWIConfig
 from brain_fwi.inversion.losses import l2_loss
 from brain_fwi.transducers.helmet import ring_array_2d, transducer_positions_to_grid
 
@@ -116,16 +112,18 @@ class TestGradientFlow:
         )
 
         c_min, c_max = 1400.0, 3200.0
-        # Perturbed initial velocity (slightly different from true)
+        # Perturbed initial velocity (slightly different from true).
+        # Direct-velocity parameterisation: params are stored in m/s and
+        # bounds are enforced by clip inside the loss function.
         c_init = jnp.ones(s["grid_shape"]) * 1480.0
-        params = _velocity_to_params(c_init, c_min, c_max)
+        params = c_init
 
         # Pre-compute time_axis OUTSIDE the traced function.
         # TimeAxis.from_medium calls float() which breaks JAX tracing.
         fixed_time_axis = s["time_axis"]
 
         def loss_fn(p):
-            velocity = _params_to_velocity(p, c_min, c_max)
+            velocity = jnp.clip(p, c_min, c_max)
             domain = build_domain(s["grid_shape"], s["dx"])
             medium = build_medium(domain, velocity, s["rho"], pml_size=10)
 
@@ -152,13 +150,13 @@ class TestGradientFlow:
 
         c_min, c_max = 1400.0, 3200.0
         c_init = jnp.ones(s["grid_shape"]) * 1480.0
-        params = _velocity_to_params(c_init, c_min, c_max)
+        params = c_init
 
         # Pre-compute time_axis outside traced scope
         fixed_time_axis = s["time_axis"]
 
         def loss_fn(p):
-            velocity = _params_to_velocity(p, c_min, c_max)
+            velocity = jnp.clip(p, c_min, c_max)
             domain = build_domain(s["grid_shape"], s["dx"])
             medium = build_medium(domain, velocity, s["rho"], pml_size=10)
 
