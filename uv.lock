@@ -83,6 +83,7 @@ dependencies = [
     { name = "nibabel" },
     { name = "numpy" },
     { name = "optax" },
+    { name = "pdequinox" },
     { name = "pynrrd" },
     { name = "scipy" },
     { name = "tqdm" },
@@ -130,6 +131,7 @@ requires-dist = [
     { name = "nibabel", specifier = ">=5.0.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "optax", specifier = ">=0.2.0" },
+    { name = "pdequinox", specifier = ">=0.1.2" },
     { name = "pynrrd", specifier = ">=1.1.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'" },
@@ -1527,6 +1529,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
+]
+
+[[package]]
+name = "pdequinox"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "equinox" },
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/9c/ff9718b174e1b98d113d6d62fceeeb15fc01b6cdbace1c9939b9f2bc4464/pdequinox-0.1.2.tar.gz", hash = "sha256:7ee9dcbf277cbb94cda508034c0955600a03bc4c664bede5eb61b4a4b99b54c5", size = 37809, upload-time = "2024-10-17T07:02:31.786Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/7e/e0d36d65a5495eb71e1a3ce2e5f2027f9b9c86d0ab2f41a43c2735f83ebb/pdequinox-0.1.2-py3-none-any.whl", hash = "sha256:b022b38eb03fa7ce4d20622cb9dd2b36f1b80730f082cd2b757279bb7d1111fa", size = 49572, upload-time = "2024-10-17T07:02:30.761Z" },
 ]
 
 [[package]]
