@@ -22,10 +22,8 @@ Design choices:
   the MVP — a spatial-gather head that reads the FNO's latent field at
   the sensor coordinates is the natural V2 upgrade once we measure
   trace fidelity (§7.2 gate).
-- **Backed by pdequinox**: the bespoke ``FNO2D`` in ``fno2d.py`` was
-  written for the 2D toy; at 3D the weight init, FFT handling and
-  boundary modes become tricky enough that building on a maintained
-  library makes sense. ``pdequinox.arch.ClassicFNO`` takes
+- **Backed by pdequinox**: we use ``pdequinox.arch.ClassicFNO`` for robust
+  spectral handling and consistent initialisation across 2D/3D. It takes
   ``(channels, D, H, W)`` input and preserves spatial shape with a
   configurable channel count.
 
