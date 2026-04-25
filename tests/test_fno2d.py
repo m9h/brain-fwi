@@ -27,7 +27,7 @@ from brain_fwi.surrogate.fno2d import CToTraceFNO
 class TestCToTraceFNO:
     def test_output_shape(self):
         model = CToTraceFNO(
-            grid_h=16, grid_w=16, n_timesteps=50, width=8, modes=4, n_blocks=2,
+            grid_h=16, grid_w=16, n_timesteps=50, width=8, modes=4, depth=2,
             key=jr.PRNGKey(0),
         )
         c = jnp.ones((16, 16, 1))
@@ -36,7 +36,7 @@ class TestCToTraceFNO:
 
     def test_differentiable(self):
         model = CToTraceFNO(
-            grid_h=16, grid_w=16, n_timesteps=20, width=8, modes=4, n_blocks=1,
+            grid_h=16, grid_w=16, n_timesteps=20, width=8, modes=4, depth=1,
             key=jr.PRNGKey(1),
         )
         c = jnp.ones((16, 16, 1))
@@ -78,7 +78,7 @@ class TestToyTrainingReducesLoss:
 
         model = CToTraceFNO(
             grid_h=16, grid_w=16, n_timesteps=20,
-            width=16, modes=4, n_blocks=2,
+            width=16, modes=4, depth=2,
             key=model_key,
         )
 

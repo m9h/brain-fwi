@@ -32,7 +32,7 @@ class TestCToTraceFNO3DShape:
     def test_forward_shape_small(self):
         model = CToTraceFNO3D(
             grid_shape=(8, 8, 8), n_timesteps=5, n_receivers=3,
-            hidden_channels=4, num_modes=2, num_blocks=1,
+            hidden_channels=4, num_modes=2, depth=1,
             key=jr.PRNGKey(0),
         )
         c = jr.uniform(jr.PRNGKey(1), (8, 8, 8))
@@ -44,7 +44,7 @@ class TestCToTraceFNO3DShape:
         """Conditioning on source-position spike should actually affect output."""
         model = CToTraceFNO3D(
             grid_shape=(8, 8, 8), n_timesteps=5, n_receivers=3,
-            hidden_channels=4, num_modes=2, num_blocks=1,
+            hidden_channels=4, num_modes=2, depth=1,
             key=jr.PRNGKey(0),
         )
         c = jr.uniform(jr.PRNGKey(1), (8, 8, 8))
@@ -57,7 +57,7 @@ class TestCToTraceFNO3DGradient:
     def test_grad_flows_through_model_and_input(self):
         model = CToTraceFNO3D(
             grid_shape=(8, 8, 8), n_timesteps=4, n_receivers=2,
-            hidden_channels=4, num_modes=2, num_blocks=1,
+            hidden_channels=4, num_modes=2, depth=1,
             key=jr.PRNGKey(0),
         )
         c = jr.uniform(jr.PRNGKey(1), (8, 8, 8))
@@ -92,7 +92,7 @@ class TestCToTraceFNO3DTrainingReducesLoss:
 
         model = CToTraceFNO3D(
             grid_shape=(8, 8, 8), n_timesteps=3, n_receivers=2,
-            hidden_channels=8, num_modes=3, num_blocks=2,
+            hidden_channels=8, num_modes=3, depth=2,
             key=model_key,
         )
 

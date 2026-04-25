@@ -49,7 +49,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from pdequinox.arch import ClassicFNO
+from .uno import UNONet
 
 
 def _source_spike(
@@ -74,12 +74,11 @@ def _source_spike(
 class CToTraceFNO3D(eqx.Module):
     """``(D, H, W) sound speed`` → ``(N_t, N_recv) helmet traces``.
 
-    MVP scaffold per Phase 4 design §10 step 2. Fixed helmet geometry
-    is baked into the output shape; swap the readout for a multi-head
-    design if a geometry-conditional surrogate lands later.
+    MVP scaffold upgraded to UNO per Phase 4 Evidence 9.2.1.
+    Fixed helmet geometry is baked into the output shape.
     """
 
-    fno: ClassicFNO
+    backbone: UNONet
     head: eqx.nn.MLP
     grid_shape: Tuple[int, int, int] = eqx.field(static=True)
     n_timesteps: int = eqx.field(static=True)
@@ -94,7 +93,7 @@ class CToTraceFNO3D(eqx.Module):
         *,
         hidden_channels: int = 32,
         num_modes: int = 12,
-        num_blocks: int = 4,
+        depth: int = 2,
         key: jax.Array,
     ):
         fno_key, head_key = jr.split(key)
@@ -103,13 +102,13 @@ class CToTraceFNO3D(eqx.Module):
         self.n_receivers = int(n_receivers)
         self.hidden_channels = int(hidden_channels)
 
-        self.fno = ClassicFNO(
+        self.backbone = UNONet(
             num_spatial_dims=3,
             in_channels=2,            # velocity + source-spike
             out_channels=hidden_channels,
             hidden_channels=hidden_channels,
             num_modes=num_modes,
-            num_blocks=num_blocks,
+            depth=depth,
             key=fno_key,
         )
         self.head = eqx.nn.MLP(
@@ -136,7 +135,7 @@ class CToTraceFNO3D(eqx.Module):
         """
         spike = _source_spike(self.grid_shape, src_pos_grid)
         x = jnp.stack([c_norm, spike], axis=0)    # (2, D, H, W)
-        features = self.fno(x)                    # (hidden_channels, D, H, W)
+        features = self.backbone(x)                    # (hidden_channels, D, H, W)
         pooled = jnp.mean(features, axis=(1, 2, 3))  # (hidden_channels,)
         flat = self.head(pooled)                  # (n_t * n_recv,)
         return flat.reshape(self.n_timesteps, self.n_receivers)

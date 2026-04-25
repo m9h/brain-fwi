@@ -15,17 +15,17 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from pdequinox.arch import ClassicFNO
+from .uno import UNONet
 
 
 class CToTraceFNO(eqx.Module):
     """``(H, W, 1) sound-speed`` → ``(N_t,) sensor trace``.
 
-    FNO backbone retains spatial structure; a global-average-pool + MLP
+    UNO backbone captures multi-scale features; a global-average-pool + MLP
     head collapses to the trace.
     """
 
-    fno: ClassicFNO
+    backbone: UNONet
     head: eqx.nn.MLP
     grid_h: int = eqx.field(static=True)
     grid_w: int = eqx.field(static=True)
@@ -38,7 +38,7 @@ class CToTraceFNO(eqx.Module):
         n_timesteps: int,
         width: int,
         modes: int,
-        n_blocks: int,
+        depth: int,
         key: jax.Array,
     ):
         fno_key, head_key = jr.split(key)
@@ -46,14 +46,13 @@ class CToTraceFNO(eqx.Module):
         self.grid_w = grid_w
         self.n_timesteps = n_timesteps
 
-        # pdequinox ClassicFNO expects (channels, H, W)
-        self.fno = ClassicFNO(
+        self.backbone = UNONet(
             num_spatial_dims=2,
             in_channels=1,
             out_channels=width,
             hidden_channels=width,
             num_modes=modes,
-            num_blocks=n_blocks,
+            depth=depth,
             key=fno_key,
         )
         self.head = eqx.nn.MLP(
@@ -78,6 +77,6 @@ class CToTraceFNO(eqx.Module):
         else:
             x = jnp.moveaxis(c_field, -1, 0)  # (1, H, W)
 
-        features = self.fno(x)                # (width, H, W)
+        features = self.backbone(x)                # (width, H, W)
         pooled = jnp.mean(features, axis=(1, 2))  # (width,)
         return self.head(pooled)

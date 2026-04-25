@@ -31,101 +31,7 @@ from brain_fwi.simulation.forward import (
     simulate_shot_sensors,
     _build_source_signal,
 )
-
-# --- FNO Architecture ------------------------------------------------------
-
-class SpectralConv2d(eqx.Module):
-    weights: jax.Array
-    modes1: int = eqx.field(static=True)
-    modes2: int = eqx.field(static=True)
-
-    def __init__(self, in_channels, out_channels, modes1, modes2, key):
-        self.modes1 = modes1
-        self.modes2 = modes2
-        # FNO weights are complex
-        w_shape = (in_channels, out_channels, modes1, modes2)
-        key_real, key_imag = jr.split(key)
-        scale = 1 / (in_channels * out_channels)
-        self.weights = scale * (
-            jr.normal(key_real, w_shape) + 1j * jr.normal(key_imag, w_shape)
-        )
-
-    def __call__(self, x):
-        # x shape: (in_channels, x, y)
-        in_channels, nx, ny = x.shape
-        
-        # Compute Fourier transform
-        x_ft = jnp.fft.rfft2(x)
-        
-        # Multiply relevant Fourier modes
-        # x_ft shape: (in_channels, nx, ny//2 + 1)
-        out_ft = jnp.zeros((self.weights.shape[1], nx, ny // 2 + 1), dtype=jnp.complex64)
-        
-        # Upper left corner
-        out_ft = out_ft.at[:, :self.modes1, :self.modes2].set(
-            jnp.einsum("ixy,ioxy -> oxy", x_ft[:, :self.modes1, :self.modes2], self.weights)
-        )
-        # Lower left corner
-        out_ft = out_ft.at[:, -self.modes1:, :self.modes2].set(
-            jnp.einsum("ixy,ioxy -> oxy", x_ft[:, -self.modes1:, :self.modes2], self.weights)
-        )
-        
-        # Return to physical space
-        x = jnp.fft.irfft2(out_ft, s=(nx, ny))
-        return x
-
-
-class FNOBlock(eqx.Module):
-    spectral_conv: SpectralConv2d
-    bypass_conv: eqx.nn.Conv2d
-    
-    def __init__(self, channels, modes1, modes2, key):
-        k1, k2 = jr.split(key)
-        self.spectral_conv = SpectralConv2d(channels, channels, modes1, modes2, k1)
-        self.bypass_conv = eqx.nn.Conv2d(channels, channels, kernel_size=1, key=k2)
-        
-    def __call__(self, x):
-        return jax.nn.gelu(self.spectral_conv(x) + self.bypass_conv(x))
-
-
-class FNO2d(eqx.Module):
-    padding: int = eqx.field(static=True)
-    fc0: eqx.nn.Linear
-    blocks: List[FNOBlock]
-    mlp: eqx.nn.MLP
-    
-    def __init__(self, in_channels, out_channels, width, modes, n_blocks, key):
-        self.padding = 9
-        keys = jr.split(key, n_blocks + 3)
-        self.fc0 = eqx.nn.Linear(in_channels, width, key=keys[0])
-        self.blocks = [
-            FNOBlock(width, modes, modes, keys[i+1]) for i in range(n_blocks)
-        ]
-        self.mlp = eqx.nn.MLP(width, out_channels, depth=1, width_size=128, key=keys[-2])
-        
-    def __call__(self, x):
-        # x shape: (in_channels, nx, ny)
-        nx, ny = x.shape[1:]
-        
-        # Lift
-        x = jax.vmap(jax.vmap(self.fc0))(x.transpose(1, 2, 0)).transpose(2, 0, 1)
-        
-        # Padding
-        x = jnp.pad(x, ((0, 0), (0, self.padding), (0, self.padding)), mode="edge")
-        
-        # Blocks
-        for block in self.blocks:
-            x = block(x)
-            
-        # Unpad
-        x = x[:, :nx, :ny]
-        
-        # Global Average Pool
-        x = jnp.mean(x, axis=(1, 2))
-        
-        # Project to output
-        x = self.mlp(x)
-        return x
+from brain_fwi.surrogate.fno2d import CToTraceFNO
 
 # --- Data Generation -------------------------------------------------------
 
@@ -220,18 +126,19 @@ def train():
     # FNO2d maps (1, 32, 32) -> (n_t/32, 32, 1) then flatten.
     
     n_t = d_all.shape[1]
-    model = FNO2d(
-        in_channels=1, 
-        out_channels=n_t, 
-        width=64, 
-        modes=12, 
-        n_blocks=4, 
+    model = CToTraceFNO(
+        grid_h=grid_size,
+        grid_w=grid_size,
+        n_timesteps=n_t,
+        width=64,
+        modes=12,
+        depth=2,
         key=model_key
     )
     
     def predict(model, c):
-        x = c[jnp.newaxis, ...] # (1, 32, 32)
-        return model(x)
+        # c is (32, 32)
+        return model(c[..., jnp.newaxis])
 
     def loss_fn(model, c_batch, d_batch):
         preds = jax.vmap(predict, in_axes=(None, 0))(model, c_batch)

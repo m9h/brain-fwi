@@ -77,7 +77,7 @@ class TestSurrogateLoss:
     def _build(self, n_src=2, n_t=5, n_recv=3, grid=(8, 8, 8), key=jr.PRNGKey(0)):
         model = CToTraceFNO3D(
             grid_shape=grid, n_timesteps=n_t, n_receivers=n_recv,
-            hidden_channels=4, num_modes=2, num_blocks=1, key=key,
+            hidden_channels=4, num_modes=2, depth=1, key=key,
         )
         c_norm = jr.uniform(jr.PRNGKey(1), grid)
         d_true = jr.normal(jr.PRNGKey(2), (n_src, n_t, n_recv))
@@ -138,7 +138,7 @@ class TestTrainFNOSurrogate:
         reader = _FakeReader(samples)
         model = CToTraceFNO3D(
             grid_shape=grid, n_timesteps=n_t, n_receivers=n_recv,
-            hidden_channels=6, num_modes=2, num_blocks=1, key=jr.PRNGKey(0),
+            hidden_channels=6, num_modes=2, depth=1, key=jr.PRNGKey(0),
         )
 
         # Feed normalised ~[0, 1] velocities through; c_min/c_max=0/1 keeps
@@ -173,7 +173,7 @@ class TestTrainFNOSurrogate:
 
         model = CToTraceFNO3D(
             grid_shape=grid, n_timesteps=3, n_receivers=2,
-            hidden_channels=4, num_modes=2, num_blocks=1, key=jr.PRNGKey(0),
+            hidden_channels=4, num_modes=2, depth=1, key=jr.PRNGKey(0),
         )
 
         # Hold out all but one; training must only use x0.
@@ -196,7 +196,7 @@ class TestTrainFNOSurrogate:
         reader = _FakeReader(samples)
         model = CToTraceFNO3D(
             grid_shape=grid, n_timesteps=3, n_receivers=2,
-            hidden_channels=4, num_modes=2, num_blocks=1, key=jr.PRNGKey(0),
+            hidden_channels=4, num_modes=2, depth=1, key=jr.PRNGKey(0),
         )
         with pytest.raises(ValueError, match="no training samples"):
             train_fno_surrogate(
