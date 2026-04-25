@@ -106,6 +106,18 @@ def main():
     parser.add_argument("--output", type=str, default="/data/datasets/brain-fwi/brain_usct_results.h5")
     parser.add_argument("--figures", type=str, default="/data/datasets/brain-fwi/brain_usct_figures.png")
     parser.add_argument(
+        "--checkpoint-dir", type=str, default=None,
+        help=(
+            "Override the FWI checkpoint directory. Default is "
+            "<output_parent>/checkpoints/<output_stem>/, which embeds the "
+            "Slurm job id and so resists resume across submissions. Pass an "
+            "explicit path (e.g. <parent>/checkpoints/192_mida_voxel/) to "
+            "share state across restarts of the same logical run. The grid-"
+            "shape guard in `_load_checkpoint` still refuses configurations "
+            "that disagree with the saved state."
+        ),
+    )
+    parser.add_argument(
         "--phantom", choices=("synthetic", "mida"), default="synthetic",
         help="synthetic = parametric three-layer ellipsoid; mida = MIDA v1.0 NIfTI",
     )
@@ -289,7 +301,12 @@ def main():
     # Must be unique per configuration (grid size, phantom, parameterisation)
     # to avoid stale-checkpoint leakage between unrelated runs — cause of the
     # 917 shape-broadcast crash and 919 NaN failure (2026-04-23 overnight).
-    ckpt_dir = str(Path(args.output).parent / "checkpoints" / Path(args.output).stem)
+    # If --checkpoint-dir is explicit, share state across resubmits of the
+    # same logical run; otherwise fall back to the per-job (job-id-tagged)
+    # path that gives strong isolation.
+    ckpt_dir = args.checkpoint_dir or str(
+        Path(args.output).parent / "checkpoints" / Path(args.output).stem
+    )
 
     # Water mask: only update voxels inside the head (labels > 0)
     head_mask = (labels > 0).astype(jnp.float32)

@@ -47,10 +47,17 @@ mkdir -p "$OUTDIR"
 TAG="${GRID}_${PHANTOM}_${PARAM}"
 OUTFILE="${OUTDIR}/brain_usct_${TAG}_${SLURM_JOB_ID}.h5"
 FIGFILE="${OUTDIR}/brain_usct_${TAG}_${SLURM_JOB_ID}.png"
+# Checkpoint dir is keyed on (grid, phantom, parameterisation) only — NOT
+# on the Slurm job id — so a cancel-and-resubmit of the same logical run
+# picks up where the previous attempt left off. Different configurations
+# still get isolated subdirs; the in-process grid-shape guard refuses any
+# state that disagrees with the current run.
+CKPT_DIR="${OUTDIR}/checkpoints/${TAG}"
 
 echo "  Grid:    ${GRID}^3, Elements: ${ELEM}, Iters: ${ITERS}/band"
 echo "  Phantom: ${PHANTOM}, Parameterisation: ${PARAM}"
 echo "  Output:  ${OUTFILE}"
+echo "  Ckpt:    ${CKPT_DIR}"
 echo ""
 
 export JAX_PLATFORMS=cuda
@@ -64,6 +71,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
     --dx "$DX" \
     --phantom "$PHANTOM" \
     --parameterization "$PARAM" \
+    --checkpoint-dir "$CKPT_DIR" \
     --output "$OUTFILE" \
     --figures "$FIGFILE"
 
