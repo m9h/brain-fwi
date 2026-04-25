@@ -54,7 +54,7 @@ image = image.add_local_dir(
 )
 
 
-@app.function(image=image, gpu="A100", timeout=3600, memory=32768,
+@app.function(image=image, gpu="A100", timeout=4 * 3600, memory=32768,
               volumes={"/mida": mida_vol})
 def run_mida_256():
     import time

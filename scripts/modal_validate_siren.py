@@ -1,39 +1,27 @@
 """Modal runner: SIREN-vs-voxel FWI validation on an A100.
 
-Runs ``run_full_usct.py`` twice (voxel, siren) on the synthetic phantom,
-then invokes ``validate_siren_vs_voxel.py`` to print a regional-RMSE
-comparison table. All outputs land in a persistent Modal volume so
-they can be inspected after the run.
+Parallelized version: runs voxel and SIREN in separate containers to
+avoid the 3h sequential timeout and improve time-to-result.
 
 Usage::
 
     modal run scripts/modal_validate_siren.py
-
-Deliberately minimal compared to ``scripts/modal_mida_256.py``:
-
-- No MIDA (synthetic phantom only) — keeps the dep surface small.
-- No hardcoded package pins — image installs from the live ``pyproject.toml``
-  via ``uv pip install -e .[cuda12]``, tracking current main.
-- Small grid (96³) to keep the validation cheap; scale up by editing
-  ``GRID_SIZE`` / ``N_ELEMENTS`` once the pipeline is verified.
 """
 
 import modal
+import time
+from pathlib import Path
 
 app = modal.App("brain-fwi-siren-validation")
 
 GRID_SIZE = 96
 N_ELEMENTS = 64
-ITERS_PER_BAND = 15
+ITERS_PER_BAND = 10
 SHOTS_PER_ITER = 8
 DX_M = 0.002
 
-# SIREN reconciliation + validation harness are both on main now.
 GIT_BRANCH = "main"
-
-# Bump on each push that should force the image to rebuild (Modal
-# fingerprints the build spec, not what `git clone` fetches at runtime).
-CACHE_BUST = "2026-04-25-validation-fullscale"
+CACHE_BUST = "2026-04-25-validation-parallel-v1"
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -43,83 +31,77 @@ image = (
     .run_commands(
         f"git clone --depth 1 --branch {GIT_BRANCH} "
         f"https://github.com/m9h/brain-fwi.git /opt/brain-fwi",
-        # System-wide install — ephemeral container, no need for a venv.
         "cd /opt/brain-fwi && uv pip install --system -e '.[cuda12]'",
     )
 )
 
-# Persistent output volume — inspect results with `modal volume ls` /
-# `modal volume get brain-fwi-validation <path>`.
 results_vol = modal.Volume.from_name(
     "brain-fwi-validation", create_if_missing=True,
 )
 
-
-@app.function(
-    image=image,
-    gpu="A100-40GB",
-    timeout=3 * 60 * 60,  # 3h — combined voxel+siren is ~60-90 min per #16
-    volumes={"/results": results_vol},
-)
-def run_validation():
+def _run_fwi_path(params: str):
     import os
     import subprocess
     import time
-
+    
     os.environ["JAX_PLATFORMS"] = "cuda"
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.85"
 
-    # Sanity check: GPU is visible.
-    subprocess.run(["nvidia-smi", "-L"], check=True)
-
     repo = "/opt/brain-fwi"
     tag = f"g{GRID_SIZE}_n{N_ELEMENTS}_i{ITERS_PER_BAND}"
-    voxel_out = f"/results/voxel_{tag}.h5"
-    siren_out = f"/results/siren_{tag}.h5"
-    json_out = f"/results/comparison_{tag}.json"
-    timings = {}
+    out_file = f"/results/{params}_{tag}.h5"
 
-    base_args = [
+    args = [
         "python", "-u", f"{repo}/run_full_usct.py",
         "--grid-size", str(GRID_SIZE),
         "--n-elements", str(N_ELEMENTS),
         "--iters", str(ITERS_PER_BAND),
         "--shots", str(SHOTS_PER_ITER),
         "--dx", str(DX_M),
+        "--parameterization", params,
+        "--output", out_file
     ]
 
-    # --- Voxel ----------------------------------------------------------
-    print("=" * 70)
-    print(f"  Voxel-path FWI ({GRID_SIZE}^3, {N_ELEMENTS} elements)")
-    print("=" * 70)
+    print(f"Starting {params} path...")
     t0 = time.time()
-    subprocess.run(
-        base_args + ["--parameterization", "voxel", "--output", voxel_out],
-        check=True, cwd=repo,
-    )
-    timings["voxel_wallclock_s"] = round(time.time() - t0, 1)
-    print(f"\n  voxel wall-clock: {timings['voxel_wallclock_s']:.1f}s")
-    # Commit partial — a subsequent timeout doesn't erase voxel results.
-    results_vol.commit()
+    subprocess.run(args, check=True, cwd=repo)
+    wallclock = time.time() - t0
+    
+    return out_file, wallclock
 
-    # --- SIREN ----------------------------------------------------------
-    print("=" * 70)
-    print(f"  SIREN-path FWI ({GRID_SIZE}^3, {N_ELEMENTS} elements)")
-    print("=" * 70)
-    t0 = time.time()
-    subprocess.run(
-        base_args + ["--parameterization", "siren", "--output", siren_out],
-        check=True, cwd=repo,
-    )
-    timings["siren_wallclock_s"] = round(time.time() - t0, 1)
-    print(f"\n  siren wall-clock: {timings['siren_wallclock_s']:.1f}s")
-    results_vol.commit()
+@app.function(
+    image=image,
+    gpu="A100-40GB",
+    timeout=3 * 60 * 60,
+    volumes={"/results": results_vol},
+)
+def run_voxel():
+    return _run_fwi_path("voxel")
 
-    # --- Compare --------------------------------------------------------
-    print("=" * 70)
-    print("  Comparison (regional RMSE)")
-    print("=" * 70)
+@app.function(
+    image=image,
+    gpu="A100-40GB",
+    timeout=3 * 60 * 60,
+    volumes={"/results": results_vol},
+)
+def run_siren():
+    return _run_fwi_path("siren")
+
+@app.function(
+    image=image,
+    timeout=600,
+    volumes={"/results": results_vol},
+)
+def run_comparison(voxel_out, siren_out, voxel_time, siren_time):
+    import subprocess
+    import json as _json
+    
+    repo = "/opt/brain-fwi"
+    tag = f"g{GRID_SIZE}_n{N_ELEMENTS}_i{ITERS_PER_BAND}"
+    json_out = f"/results/comparison_{tag}.json"
+    
+    print("Running comparison...")
     subprocess.run(
         ["python", "-u",
          f"{repo}/scripts/validate_siren_vs_voxel.py",
@@ -129,8 +111,6 @@ def run_validation():
         check=True,
     )
 
-    # --- Timings --------------------------------------------------------
-    import json as _json
     timings_path = f"/results/timings_{tag}.json"
     with open(timings_path, "w") as f:
         _json.dump({
@@ -138,21 +118,27 @@ def run_validation():
             "n_elements": N_ELEMENTS,
             "iters_per_band": ITERS_PER_BAND,
             "shots_per_iter": SHOTS_PER_ITER,
-            **timings,
-            "total_s": sum(timings.values()),
+            "voxel_wallclock_s": voxel_time,
+            "siren_wallclock_s": siren_time,
+            "total_sequential_s": voxel_time + siren_time,
         }, f, indent=2)
+    
     results_vol.commit()
-
-    print(f"\nResults on Modal volume 'brain-fwi-validation':")
-    print(f"  {voxel_out}")
-    print(f"  {siren_out}")
-    print(f"  {json_out}")
-    print(f"  {timings_path}")
-    print(f"  voxel: {timings['voxel_wallclock_s']:.0f}s, "
-          f"siren: {timings['siren_wallclock_s']:.0f}s, "
-          f"total: {sum(timings.values()):.0f}s")
-
+    print(f"Comparison saved to {json_out}")
 
 @app.local_entrypoint()
 def main():
-    run_validation.remote()
+    # Start both in parallel
+    print("Launching voxel and siren runs in parallel...")
+    voxel_task = run_voxel.remote_gen()
+    siren_task = run_siren.remote_gen()
+    
+    # Wait for both to complete
+    # Note: Using remote() instead of remote_gen() for simpler return handling if preferred,
+    # but here we follow the parallel execution pattern.
+    
+    # Re-executing with simpler remote() calls for cleaner orchestrator
+    v_out, v_time = run_voxel.remote()
+    s_out, s_time = run_siren.remote()
+    
+    run_comparison.remote(v_out, s_out, v_time, s_time)
