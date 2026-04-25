@@ -115,6 +115,16 @@ def main():
         help="Path to the MIDA label NIfTI (only used when --phantom mida)",
     )
     parser.add_argument(
+        "--mida-keep-air", action="store_true",
+        help=(
+            "Keep MIDA internal air cavities (sinuses, oral cavity) at "
+            "c=343 m/s instead of water-filling them. Default (False) is "
+            "the FWI-stable setting; at 2 mm dx the air wavelength at 500 "
+            "kHz (0.7 mm) is under-sampled and drives the pseudospectral "
+            "solver to NaN (observed in job 929)."
+        ),
+    )
+    parser.add_argument(
         "--parameterization", choices=("voxel", "siren"), default="voxel",
         help="FWI parameterisation: voxel grid (default) or SIREN MLP.",
     )
@@ -167,8 +177,11 @@ def main():
     elif args.phantom == "mida":
         from brain_fwi.phantoms.mida import make_mida_phantom, MIDA_LABEL_NAMES
         print(f"  Source:      MIDA v1.0 NIfTI ({args.mida_path})")
+        print(f"  Internal air: {'preserved' if args.mida_keep_air else 'water-filled (stable)'}")
         labels, c_true, rho, alpha = make_mida_phantom(
-            args.mida_path, grid_shape, dx, add_lesion=True,
+            args.mida_path, grid_shape, dx,
+            add_lesion=True,
+            water_fill_internal_air=not args.mida_keep_air,
         )
         # MIDA label inventory — show the most populous + the lesion
         import numpy as np_
