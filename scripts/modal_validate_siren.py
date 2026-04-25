@@ -28,18 +28,18 @@ ITERS_PER_BAND = 15
 SHOTS_PER_ITER = 8
 DX_M = 0.002
 
-# Clone the branch that contains BOTH the SIREN reconciliation (already
-# on main via PR #3) AND this validation harness. Once this branch
-# merges, callers can switch back to main.
-GIT_BRANCH = "feature/siren-validation"
+# SIREN reconciliation + validation harness are both on main now.
+GIT_BRANCH = "main"
 
-# Build the container image from the live repo — matches current main
-# including the SIREN reconciliation, avoiding the pin-drift trap that
-# modal_mida_256.py fell into.
+# Bump on each push that should force the image to rebuild (Modal
+# fingerprints the build spec, not what `git clone` fetches at runtime).
+CACHE_BUST = "2026-04-25-validation-fullscale"
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "build-essential")
     .pip_install("uv")
+    .env({"BRAIN_FWI_CACHE_BUST": CACHE_BUST})
     .run_commands(
         f"git clone --depth 1 --branch {GIT_BRANCH} "
         f"https://github.com/m9h/brain-fwi.git /opt/brain-fwi",
@@ -58,12 +58,13 @@ results_vol = modal.Volume.from_name(
 @app.function(
     image=image,
     gpu="A100-40GB",
-    timeout=60 * 60,  # 1 hour ceiling
+    timeout=3 * 60 * 60,  # 3h — combined voxel+siren is ~60-90 min per #16
     volumes={"/results": results_vol},
 )
 def run_validation():
-    import subprocess
     import os
+    import subprocess
+    import time
 
     os.environ["JAX_PLATFORMS"] = "cuda"
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -73,8 +74,11 @@ def run_validation():
     subprocess.run(["nvidia-smi", "-L"], check=True)
 
     repo = "/opt/brain-fwi"
-    voxel_out = "/results/voxel.h5"
-    siren_out = "/results/siren.h5"
+    tag = f"g{GRID_SIZE}_n{N_ELEMENTS}_i{ITERS_PER_BAND}"
+    voxel_out = f"/results/voxel_{tag}.h5"
+    siren_out = f"/results/siren_{tag}.h5"
+    json_out = f"/results/comparison_{tag}.json"
+    timings = {}
 
     base_args = [
         "python", "-u", f"{repo}/run_full_usct.py",
@@ -85,22 +89,34 @@ def run_validation():
         "--dx", str(DX_M),
     ]
 
+    # --- Voxel ----------------------------------------------------------
     print("=" * 70)
-    print("  Running voxel-path FWI")
+    print(f"  Voxel-path FWI ({GRID_SIZE}^3, {N_ELEMENTS} elements)")
     print("=" * 70)
+    t0 = time.time()
     subprocess.run(
         base_args + ["--parameterization", "voxel", "--output", voxel_out],
         check=True, cwd=repo,
     )
+    timings["voxel_wallclock_s"] = round(time.time() - t0, 1)
+    print(f"\n  voxel wall-clock: {timings['voxel_wallclock_s']:.1f}s")
+    # Commit partial — a subsequent timeout doesn't erase voxel results.
+    results_vol.commit()
 
+    # --- SIREN ----------------------------------------------------------
     print("=" * 70)
-    print("  Running SIREN-path FWI")
+    print(f"  SIREN-path FWI ({GRID_SIZE}^3, {N_ELEMENTS} elements)")
     print("=" * 70)
+    t0 = time.time()
     subprocess.run(
         base_args + ["--parameterization", "siren", "--output", siren_out],
         check=True, cwd=repo,
     )
+    timings["siren_wallclock_s"] = round(time.time() - t0, 1)
+    print(f"\n  siren wall-clock: {timings['siren_wallclock_s']:.1f}s")
+    results_vol.commit()
 
+    # --- Compare --------------------------------------------------------
     print("=" * 70)
     print("  Comparison (regional RMSE)")
     print("=" * 70)
@@ -109,13 +125,32 @@ def run_validation():
          f"{repo}/scripts/validate_siren_vs_voxel.py",
          "--voxel", voxel_out,
          "--siren", siren_out,
-         "--json-out", "/results/comparison.json"],
+         "--json-out", json_out],
         check=True,
     )
 
+    # --- Timings --------------------------------------------------------
+    import json as _json
+    timings_path = f"/results/timings_{tag}.json"
+    with open(timings_path, "w") as f:
+        _json.dump({
+            "grid_size": GRID_SIZE,
+            "n_elements": N_ELEMENTS,
+            "iters_per_band": ITERS_PER_BAND,
+            "shots_per_iter": SHOTS_PER_ITER,
+            **timings,
+            "total_s": sum(timings.values()),
+        }, f, indent=2)
     results_vol.commit()
-    print(f"\nResults saved to Modal volume 'brain-fwi-validation'")
-    print(f"  /results/voxel.h5, /results/siren.h5, /results/comparison.json")
+
+    print(f"\nResults on Modal volume 'brain-fwi-validation':")
+    print(f"  {voxel_out}")
+    print(f"  {siren_out}")
+    print(f"  {json_out}")
+    print(f"  {timings_path}")
+    print(f"  voxel: {timings['voxel_wallclock_s']:.0f}s, "
+          f"siren: {timings['siren_wallclock_s']:.0f}s, "
+          f"total: {sum(timings.values()):.0f}s")
 
 
 @app.local_entrypoint()
