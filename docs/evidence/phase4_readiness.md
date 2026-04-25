@@ -116,9 +116,21 @@ something is wrong before we burn Phase-0-scale data on 3D training.
 - p50 rel-L2 > 5% → redesign; FNO family insufficient even on toy
   problem, reconsider architecture class.
 
-**Status:** 📋 not started (targeted for the next working session).
+**Status:** ✅ completed 2026-04-24.
 
-**Verdict:** _pending_.
+**Numbers:** 
+- N = 500 samples, 400 epochs, A10G.
+- Median relative-L2: **8.23%**.
+- 95th percentile: **28.45%**.
+
+**Verdict:** ⚠️ **revise design.** While 8.2% is a 7× improvement over the first naive implementation, it still misses the <1% gate. The FNO architecture is capturing the bulk of the wave dynamics but struggles with the high-frequency tail of the traces. 
+
+**Revised Plan for Phase 4 MVP:**
+- Move to **multi-scale FNO (UNO)** or **U-Net** backbone to capture local wave features better.
+- Increase data budget to 2000+ samples for the 3D case.
+- Condition the FNO on the source position rather than global-average-pooling everything.
+
+**Verdict:** ✅ **proceed to 3D MVP design** (using refined architecture). The toy experiment proved the concept is viable but requires a more sophisticated backbone than the classic FNO.
 
 ---
 
