@@ -17,6 +17,13 @@ Why Modal not RunPod for this run:
       modal_extended_fwi.py); copying the pattern keeps reviewer
       surface area small.
 
+Wall budget: bands 2 + 3 at 30 iters each ~= 5 h on A100 (band 1 took
+~5 h on DGX); plus the script re-runs the ~42 min forward simulation
+on entry. Total ~6 h actual, so the 24 h Modal timeout below has 4x
+margin. If a future config bumps total runtime past 24 h, fall back
+to the RunPod pattern in `scripts/run_runpod_siren_validation.py` —
+RunPod pods have no per-function timeout.
+
 One-time setup (run from a machine with the modal CLI configured)::
 
     # 1. Mida NIfTI — already on the mida-data volume from earlier runs
@@ -87,7 +94,7 @@ work_vol = modal.Volume.from_name(WORK_VOL_NAME, create_if_missing=True)
 @app.function(
     image=image,
     gpu="A100-80GB",
-    timeout=12 * 60 * 60,                # 12h budget for bands 2+3
+    timeout=24 * 60 * 60,                # 24h — Modal max per-fn budget for bands 2+3
     memory=32 * 1024,                    # 32 GiB RAM
     volumes={
         "/mida": mida_vol,
