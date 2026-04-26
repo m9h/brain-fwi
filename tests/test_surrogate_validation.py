@@ -39,7 +39,7 @@ class TestTraceFidelity:
     def _model(self, grid=(8, 8, 8), n_t=5, n_recv=2):
         return CToTraceFNO3D(
             grid_shape=grid, n_timesteps=n_t, n_receivers=n_recv,
-            hidden_channels=4, num_modes=2, num_blocks=1, key=jr.PRNGKey(0),
+            hidden_channels=4, num_modes=2, depth=1, key=jr.PRNGKey(0),
         )
 
     def test_metric_keys_and_shapes(self):
