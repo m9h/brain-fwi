@@ -80,7 +80,7 @@ work_vol = modal.Volume.from_name(WORK_VOL_NAME, create_if_missing=True)
 @app.function(
     image=image,
     gpu="A100-80GB",
-    timeout=20 * 60 * 60,    # 20 h budget for 100 samples at 96^3 MIDA
+    timeout=24 * 60 * 60,    # 24 h — Modal max per-fn budget. Use the RunPod variant if you need longer.
     memory=32 * 1024,
     volumes={
         "/mida": mida_vol,
