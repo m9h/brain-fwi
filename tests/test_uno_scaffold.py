@@ -1,3 +1,19 @@
+"""Exploratory scaffold for the UNO spectral-conv resampling design.
+
+This file probes pdequinox's internal SpectralConv weight layout to
+work out how a downsampling-capable spectral convolution should index
+the modes against an output buffer of a different size to the input.
+
+Skipped by default: the production UNO implementation is in
+``src/brain_fwi/surrogate/uno.py`` and tested in ``tests/test_uno.py``.
+This scaffold is kept as a record of the experimentation that fed into
+that implementation. Re-enable the test when you want to revisit the
+einsum/buffer layout — be warned that pdequinox's spectral conv stores
+weights as ``(n_slices, in, out, *modes)`` and that the slice tuples
+returned by ``generate_modes_slices`` cover spatial dims only, so
+indexing with ``x_fft[tuple(slice_i)]`` skips the channel axis and
+produces the wrong shape.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -5,6 +21,8 @@ import jax.random as jr
 import pytest
 from pdequinox.conv._spectral_conv import SpectralConv, spectral_conv_nd
 
+
+@pytest.mark.skip(reason="exploratory scaffold; production UNO lives in tests/test_uno.py")
 def test_downsampling_spectral_conv():
     # Test if we can do a spectral conv that changes output shape
     key = jr.PRNGKey(0)
@@ -35,8 +53,10 @@ def test_downsampling_spectral_conv():
             # We must ensure slice_i is within bounds of 'out'
             # If out is smaller than x_fft, we might need to truncate
             # But 'modes' should already be <= min(si, out_s)//2
-            print(f"Slice {i}: x_fft shape {x_fft[tuple(slice_i)].shape}, weight shape {weight[i].shape}")
-            matmul_out = jnp.einsum("i...,oi...->o...", x_fft[tuple(slice_i)], weight[i])
+            # pdequinox weights are (n_slices, in, out, *modes) — after [i]
+            # the layout is (in, out, *modes), so the einsum index order is
+            # "i...,io...->o..." (not "oi..." as a previous draft assumed).
+            matmul_out = jnp.einsum("i...,io...->o...", x_fft[tuple(slice_i)], weight[i])
             out = out.at[tuple(slice_i)].set(matmul_out)
             
         return jnp.fft.irfftn(out, s=out_s)
