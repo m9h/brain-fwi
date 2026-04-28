@@ -46,7 +46,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "main"
-CACHE_BUST = "2026-04-28-fno-train-v1"
+CACHE_BUST = "2026-04-28-fno-train-v2-scan-remat"
 
 DATASET_VOL = "brain-fwi-phase0-dataset"
 OUTPUT_VOL = "brain-fwi-fno-output"
@@ -93,7 +93,7 @@ def _train_body(
 
     args = [
         "python", "-u", "/opt/brain-fwi/scripts/train_fno_on_phase0.py",
-        "--data", "/dataset/phase0_v1_mida_96",
+        "--data", "/dataset/datasets/phase0_v1_mida_96",
         "--out", "/output/fno_surrogate",
         "--n-steps", str(n_steps),
         "--learning-rate", str(learning_rate),
