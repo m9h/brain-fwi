@@ -83,10 +83,22 @@ def trace_fidelity(
     """
     all_rel_l2 = []
     spectral_ratios = []
+    n_t_model = int(model.n_timesteps)
     for s in samples:
         c = jnp.asarray(s["sound_speed_voxel"], dtype=jnp.float32)
         d = jnp.asarray(s["observed_data"], dtype=jnp.float32)
         c_norm = (c - c_min) / (c_max - c_min)
+
+        # Crop / pad d to the model's fixed n_timesteps. Same logic as
+        # in surrogate.train (variable trace length per MIDA aug).
+        if d.shape[1] >= n_t_model:
+            d = d[:, :n_t_model, :]
+        else:
+            pad = jnp.zeros(
+                (d.shape[0], n_t_model - d.shape[1], d.shape[2]),
+                dtype=d.dtype,
+            )
+            d = jnp.concatenate([d, pad], axis=1)
 
         pred = _predict_all_shots(model, c_norm, source_positions)
         rel = _per_trace_rel_l2(pred, d)
