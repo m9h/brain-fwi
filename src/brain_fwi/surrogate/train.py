@@ -67,6 +67,11 @@ def surrogate_loss(
 ) -> jnp.ndarray:
     """Design §4 training objective on a single ``(c, d)`` pair.
 
+    Sums per-shot losses with ``lax.scan`` + ``jax.checkpoint`` so
+    backward rematerialises one shot at a time. Without this, JIT
+    unrolls the per-shot loop and the activations for all 128 shots
+    blow up VRAM (190 GiB on H200, observed).
+
     Args:
         model: FNO surrogate.
         c_norm: ``(D, H, W)`` normalised velocity.
@@ -78,14 +83,23 @@ def surrogate_loss(
         Scalar loss.
     """
     n_src = len(source_positions)
-    time_losses = jnp.zeros(())
-    spec_losses = jnp.zeros(())
-    for s_idx in range(n_src):
-        pred = model(c_norm, source_positions[s_idx])    # (n_t, n_recv)
-        target = d_true[s_idx]                           # (n_t, n_recv)
-        time_losses = time_losses + _rel_l2(pred, target)
-        spec_losses = spec_losses + _spectral_rel_l2(pred, target)
-    return (time_losses + lambda_spec * spec_losses) / n_src
+    src_arr = jnp.asarray(source_positions, dtype=jnp.int32)  # (n_src, 3)
+
+    @jax.checkpoint
+    def _per_shot(src_xyz: jnp.ndarray, target: jnp.ndarray):
+        pred = model(c_norm, (src_xyz[0], src_xyz[1], src_xyz[2]))
+        return _rel_l2(pred, target), _spectral_rel_l2(pred, target)
+
+    def body(carry, xs):
+        src_xyz, target = xs
+        t_loss, s_loss = _per_shot(src_xyz, target)
+        t_acc, s_acc = carry
+        return (t_acc + t_loss, s_acc + s_loss), None
+
+    (time_total, spec_total), _ = jax.lax.scan(
+        body, (jnp.zeros(()), jnp.zeros(())), (src_arr, d_true)
+    )
+    return (time_total + lambda_spec * spec_total) / n_src
 
 
 def _normalise_c(c: jnp.ndarray, c_min: float, c_max: float) -> jnp.ndarray:
