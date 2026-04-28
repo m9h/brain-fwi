@@ -184,6 +184,21 @@ def train_fno_surrogate(
         d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)
         c_norm = _normalise_c(c, c_min, c_max)
 
+        # Phase-0 samples have variable trace length (each MIDA aug has
+        # a slightly different max-c, hence a different CFL-derived dt
+        # and n_timesteps). The FNO head has a fixed-size output, so we
+        # crop to model.n_timesteps. Pad if a sample happens to be
+        # shorter than the model's expected length.
+        n_t_model = int(model.n_timesteps)
+        if d.shape[1] >= n_t_model:
+            d = d[:, :n_t_model, :]
+        else:
+            pad = jnp.zeros(
+                (d.shape[0], n_t_model - d.shape[1], d.shape[2]),
+                dtype=d.dtype,
+            )
+            d = jnp.concatenate([d, pad], axis=1)
+
         model, opt_state, loss = step(model, opt_state, c_norm, d)
         losses.append(float(loss))
         if verbose and (s + 1) % log_every == 0:
