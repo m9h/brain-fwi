@@ -296,3 +296,40 @@ def em_sample(
 
     (final, _), _ = jax.lax.scan(body, (theta, key), jnp.arange(n_steps))
     return final
+
+
+def score_prior_grad_term(
+    score_fn,
+    theta: jax.Array,
+    *,
+    t_eps: float = 0.01,
+    weight: float = 1.0,
+) -> jax.Array:
+    """MAP-FWI regulariser term: ``−λ · s_φ(θ, t_eps)``.
+
+    ADD this to the data gradient to turn FWI's gradient descent
+    into MAP estimation:
+
+        effective_grad = ∇L_data − λ · s_φ(θ, t_eps)
+                       = ∇L_data + score_prior_grad_term(...)
+
+    The score is ``∇ log p(θ)`` (points uphill on density), so
+    subtracting weighted score from descent gradient pushes the
+    optimisation toward higher-density θ regions — Phase 3 §4.
+
+    ``t_eps`` is the small noise level at which to evaluate the
+    score; the network was trained with ``t_min ≥ 1e-3`` so
+    asking it at ``t = 0`` exactly is out-of-distribution.
+
+    Args:
+        score_fn: ``(θ, t) → ℝ^D`` callable.
+        theta: current SIREN-weight vector at this FWI iter.
+        t_eps: noise level for the score evaluation.
+        weight: Phase 3 §4 ``λ``.
+
+    Returns:
+        ``−λ · s_φ(θ, t_eps)`` — same shape as ``theta``.
+    """
+    if weight == 0.0:
+        return jnp.zeros_like(theta)
+    return -weight * score_fn(theta, jnp.asarray(t_eps))

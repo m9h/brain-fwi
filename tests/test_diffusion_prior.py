@@ -235,3 +235,34 @@ def test_em_sample_with_perfect_score_recovers_unit_gaussian_moments():
     var = jnp.var(samples, axis=0)
     assert jnp.all(jnp.abs(mean) < 0.15), f"sample mean off: {mean}"
     assert jnp.all(jnp.abs(var - 1.0) < 0.30), f"sample var off: {var}"
+
+
+def test_score_prior_grad_term_returns_negative_weighted_score():
+    """``score_prior_grad_term`` returns ``−λ · s_φ(θ, t_eps)``.
+
+    Sign convention: this is the term to ADD to ``∇L_data`` so the
+    composite gradient minimises ``NLL = −log p(d|θ) − log p(θ)``.
+    The score is ``∇ log p(θ)`` (uphill on density), so subtracting
+    it from the data gradient turns gradient descent into MAP.
+    """
+    from brain_fwi.inference.diffusion import score_prior_grad_term
+
+    def score_fn(theta, t):
+        return -theta  # analytic score for N(0, I)
+
+    theta = jnp.array([1.0, -2.0, 0.5])
+    out = score_prior_grad_term(score_fn, theta, t_eps=0.01, weight=0.5)
+    expected = -0.5 * (-theta)
+    assert jnp.allclose(out, expected)
+
+
+def test_score_prior_grad_term_zero_when_weight_zero():
+    """A weight of 0 makes the regulariser term vanish."""
+    from brain_fwi.inference.diffusion import score_prior_grad_term
+
+    def score_fn(theta, t):
+        return jnp.ones_like(theta) * 99.0
+
+    theta = jnp.array([1.0, -2.0, 0.5])
+    out = score_prior_grad_term(score_fn, theta, t_eps=0.01, weight=0.0)
+    assert jnp.allclose(out, jnp.zeros_like(theta))
