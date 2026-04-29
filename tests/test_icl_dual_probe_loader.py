@@ -154,6 +154,33 @@ def test_synthetic_first_arrival_speed_is_physical():
 
 
 @needs_data
+def test_select_shot_partitions_traces_by_source_id():
+    """``select_shot`` returns the 1152 traces for one source element
+    and the 384 distinct source ids together exhaust all 442368 traces.
+    """
+    from brain_fwi.data.icl_dual_probe import load_icl_dual_probe, select_shot
+
+    sample = load_icl_dual_probe(DEFAULT_PATH, mode="synthetic")
+    try:
+        pairs = sample["src_recv_pairs"]
+        unique_src = np.unique(pairs[:, 0])
+        assert unique_src.size == 384, \
+            f"expected 384 active source ids, got {unique_src.size}"
+
+        first = unique_src[0]
+        trace_idx, rcv_ids = select_shot(pairs, int(first))
+        assert trace_idx.size == 1152
+        assert rcv_ids.size == 1152
+        assert np.all(np.diff(trace_idx) > 0), \
+            "trace_indices must be sorted (h5py fancy-index requirement)"
+
+        with pytest.raises(ValueError, match="no traces"):
+            select_shot(pairs, src_element_id=999_999)
+    finally:
+        sample["_h5_file"].close()
+
+
+@needs_data
 def test_experimental_loads_with_dataset_root_key():
     """The experimental file uses root key ``dataset`` (vs the
     synthetic file's ``WaterShot`` copy-paste bug). Loader auto-detects

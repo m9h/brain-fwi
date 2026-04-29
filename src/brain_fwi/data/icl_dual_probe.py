@@ -119,3 +119,36 @@ def load_icl_dual_probe(
         "dt": DT_SECONDS,
         "_h5_file": h5,
     }
+
+
+def select_shot(src_recv_pairs: np.ndarray, src_element_id: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return trace-row indices and receiver element ids for one source.
+
+    The dataset stores all 442 368 traces flat. For per-shot processing
+    (FWI shot loop, batched preconditioning) callers need to filter by
+    source-element id. This helper does the np.flatnonzero so callers
+    don't reimplement the same one-liner in every script.
+
+    Args:
+        src_recv_pairs: ``(n_traces, 2)`` 0-based ``(src_id, rcv_id)``
+            array, as returned in the ``src_recv_pairs`` key of
+            :func:`load_icl_dual_probe`.
+        src_element_id: 0-based element id of the source. Must be one
+            of the 384 active source ids; raises ``ValueError`` if no
+            traces match.
+
+    Returns:
+        ``(trace_indices, rcv_element_ids)``. ``trace_indices`` is a
+        sorted int64 array indexing into ``traces`` (so it satisfies
+        h5py's increasing-order requirement for fancy indexing).
+        ``rcv_element_ids`` indexes into ``transducer_positions_m``.
+    """
+    mask = src_recv_pairs[:, 0] == src_element_id
+    trace_indices = np.flatnonzero(mask).astype(np.int64)
+    if trace_indices.size == 0:
+        raise ValueError(
+            f"src_element_id {src_element_id} matches no traces; "
+            f"only the 384 active source elements are valid"
+        )
+    rcv_element_ids = src_recv_pairs[trace_indices, 1]
+    return trace_indices, rcv_element_ids

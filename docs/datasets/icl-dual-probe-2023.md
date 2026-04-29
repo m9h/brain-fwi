@@ -92,7 +92,7 @@ step, but this is a separate quantity from the acquisition rate of
 the stored experimental data.
 
 **Inferred value: `dt = 11 / 250 × 10⁶ s ≈ 44 ns`** (i.e.
-22.727 MHz). Two converging lines of evidence:
+22.727 MHz). Three converging lines of evidence:
 
 - Verasonics systems clock ADC sampling at 250 MHz / N. The lowest
   N giving a rate compatible with 2.5 MHz P4-1 probes that matches
@@ -102,6 +102,15 @@ the stored experimental data.
   `2 · 0.11 m / 1500 m s⁻¹ ≈ 146.7 µs`. Trace duration at 44 ns:
   `3328 · 44 ns = 146.4 µs` (0.2 % match). At 50 ns the trace would
   cover 166.4 µs — 13 % too long for the geometry.
+- **Direct first-arrival fit on synthetic data.** Linear regression
+  of first-arrival time vs src/rcv distance over a 200-trace random
+  sample (long-baseline pairs, > 10 cm) gives **c = 1527 m s⁻¹**
+  with residual std ≈ 257 ns. That sits squarely between pure water
+  (1500) and the brain-phantom velocity (~1540) — exactly the
+  path-weighted speed expected. If `dt` were the 50 ns simulation
+  step the same fit would return `c ≈ 1734 m s⁻¹`, which is
+  non-physical for water + soft tissue. This cross-check is encoded
+  as `tests/test_icl_dual_probe_loader.py::test_synthetic_first_arrival_speed_is_physical`.
 
 **Consequence:** the loader exposes `dt = 44 ns` as
 `brain_fwi.data.icl_dual_probe.DT_SECONDS`. Users who later confirm
