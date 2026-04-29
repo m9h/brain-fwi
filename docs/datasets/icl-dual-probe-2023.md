@@ -131,6 +131,54 @@ MATLAB's logical layout for these files is `(n_time, n_traces) =
 bytes. The loader returns the h5py orientation —
 `traces[trace_idx, time_idx]` — which is the natural numpy idiom.
 
+## Synthetic-vs-experimental gap (diagnostic)
+
+How close are the published synthetic traces to the matching
+experimental traces, in the bandpass region (200 kHz – 1 MHz)?
+
+`scripts/icl_syn_vs_exp_diagnostic.py` computes cosine similarity
+between synthetic and experimental for 300 random src/rcv pairs,
+stratified by perpendicular distance from the ring centre (small
+perp = chord traverses near the phantom centre; large perp =
+tangential / water-only path).
+
+Top-line on a 2026-04-29 run (seed 0):
+
+> Median synthetic-vs-experimental correlation: **0.871**
+> 12.3 % of pairs ≥ 0.95, 5.1 % ≤ 0.50
+
+Stratified:
+
+| Perp from centre | n | Median correlation |
+|---|---|---|
+| 0–20 mm | 63 | 0.893 |
+| 20–40 mm | 65 | 0.864 |
+| 40–60 mm | 108 | 0.898 |
+| 60–80 mm (tangential) | 40 | **0.744** |
+
+| Baseline | n | Median correlation |
+|---|---|---|
+| 50–100 mm | 49 | 0.779 |
+| 100–150 mm | 163 | 0.890 |
+| 150–300 mm | 64 | 0.891 |
+
+**Interpretation.** There is a real synthetic-vs-experimental gap
+(~13 % residual energy on average, with a 5 % long tail), but the
+gap does **not** stratify cleanly with how much skull/brain a
+chord traverses. The worst stratum is *tangential* paths, which is
+the opposite of what we'd expect if uniform skull attenuation were
+the dominant gap-driver. The likely contributors — source-side
+calibration, near-field ringing on shorter baselines, the
+authors' own forward-model imperfections — are all dataset-level
+issues that cannot be cleanly resolved from these traces alone.
+
+So this dataset on its own does not provide a single-number
+"Phase 5 needed" motivation. Phase 5's case is better made on a
+controlled benchmark (e.g. ITRUSST) where both lossless and lossy
+forward results are owned end-to-end — assuming the time-domain
+forward operator first learns to consume `medium.attenuation`
+(see `tests/test_attenuation_effect.py`, currently `xfail strict`).
+
 ## Local layout expected by the loader
 
 Unzip the Mendeley archive flat (no enclosing folder) and point the
