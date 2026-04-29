@@ -5,12 +5,13 @@ Reference: ``docs/design/phase3_diffusion_prior.md``.
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import List, NamedTuple, Tuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import optax
 
 
 class VPSDE(NamedTuple):
@@ -115,3 +116,72 @@ def dsm_loss_for_pair(
     target = eps / sde.sigma(t)
     pred = score_fn(theta_t, t)
     return jnp.sum((pred + target) ** 2)
+
+
+def train_score_matching(
+    model: ScoreMLP,
+    samples: jax.Array,
+    sde: VPSDE,
+    *,
+    n_steps: int,
+    batch_size: int,
+    learning_rate: float = 1e-3,
+    key: jax.Array,
+    t_min: float = 1e-3,
+) -> Tuple[ScoreMLP, List[float]]:
+    """Adam-trained denoising-score-matching loop.
+
+    Per step: sample a batch of clean ``θ`` from ``samples``, draw fresh
+    ``ε ~ N(0, I)`` and ``t ~ U(t_min, 1)``, take a gradient step on the
+    averaged DSM loss. ``t_min > 0`` avoids the singular ``σ(0) = 0``
+    in the loss target.
+
+    Args:
+        model: ScoreMLP to train (returned updated).
+        samples: ``(N, D)`` clean θ samples.
+        sde: noise schedule.
+        n_steps: number of gradient steps.
+        batch_size: per-step batch size; sampled with replacement.
+        learning_rate: Adam learning rate.
+        key: PRNG key (split internally).
+        t_min: lower clamp on t to avoid σ→0.
+
+    Returns:
+        (trained_model, loss_history)
+    """
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+    n = int(samples.shape[0])
+
+    def batch_loss(m, theta_batch, eps_batch, t_batch):
+        # Vectorise over the batch dim. Weight by σ²(t) (the design-
+        # doc λ(t) choice) so the target -ε/σ does not blow up the loss
+        # near t=0 — without weighting, training is unstable.
+        per_sample = jax.vmap(
+            lambda th, ee, tt: dsm_loss_for_pair(m, sde, th, ee, tt)
+        )(theta_batch, eps_batch, t_batch)
+        weights = sde.sigma(t_batch) ** 2
+        return jnp.mean(weights * per_sample)
+
+    @eqx.filter_jit
+    def step(m, st, theta_batch, eps_batch, t_batch):
+        loss, grads = eqx.filter_value_and_grad(batch_loss)(
+            m, theta_batch, eps_batch, t_batch,
+        )
+        updates, st = optimizer.update(grads, st)
+        m = eqx.apply_updates(m, updates)
+        return m, st, loss
+
+    losses: List[float] = []
+    for _ in range(n_steps):
+        key, k_idx, k_eps, k_t = jr.split(key, 4)
+        idx = jr.randint(k_idx, (batch_size,), 0, n)
+        theta_batch = samples[idx]
+        eps_batch = jr.normal(k_eps, theta_batch.shape)
+        t_batch = jr.uniform(k_t, (batch_size,), minval=t_min, maxval=1.0)
+        model, opt_state, loss = step(
+            model, opt_state, theta_batch, eps_batch, t_batch,
+        )
+        losses.append(float(loss))
+
+    return model, losses

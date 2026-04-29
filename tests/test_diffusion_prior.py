@@ -94,3 +94,49 @@ def test_dsm_loss_positive_for_zero_score():
     loss = dsm_loss_for_pair(zero_score, sde, theta, eps, t)
     expected = float(jnp.sum(eps ** 2) / sde.sigma(t) ** 2)
     assert float(loss) == pytest.approx(expected, rel=1e-5)
+
+
+def test_score_net_recovers_analytic_score_on_unit_gaussian():
+    """§7 step 1 toy gate: training on N(0, I) samples drives the
+    score net's output to ≈ −θ_t at any t ∈ (0, 1].
+
+    For variance-preserving SDE on a unit Gaussian, the perturbed
+    marginal is still N(0, I) (since α² + σ² = 1), so the analytic
+    score is ``∇ log p_t(θ_t) = −θ_t`` everywhere. A trained
+    ScoreMLP on enough samples should match within a tight tolerance.
+    """
+    from brain_fwi.inference.diffusion import (
+        ScoreMLP,
+        VPSDE,
+        train_score_matching,
+    )
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+    rng = jr.PRNGKey(0)
+    k_data, k_net, k_train, k_eval = jr.split(rng, 4)
+
+    samples = jr.normal(k_data, (1024, 2))
+    net = ScoreMLP(dim=2, hidden=64, depth=3, key=k_net)
+
+    trained, losses = train_score_matching(
+        net, samples, sde,
+        n_steps=2000, batch_size=64, learning_rate=3e-3,
+        key=k_train,
+    )
+    assert losses[-1] < losses[0], "loss did not decrease"
+
+    # Evaluate at a mid-noise level on fresh samples.
+    theta_test = jr.normal(k_eval, (256, 2))
+    t = jnp.array(0.5)
+    eps = jr.normal(jr.PRNGKey(99), theta_test.shape)
+    theta_t = sde.alpha(t) * theta_test + sde.sigma(t) * eps
+
+    pred_score = jax.vmap(lambda x: trained(x, t))(theta_t)
+    analytic_score = -theta_t
+
+    err = jnp.linalg.norm(pred_score - analytic_score, axis=1)
+    norm = jnp.linalg.norm(analytic_score, axis=1) + 1e-9
+    median_rel_err = float(jnp.median(err / norm))
+    assert median_rel_err < 0.20, (
+        f"trained score median rel-err {median_rel_err:.3f} > 0.20"
+    )
