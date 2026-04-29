@@ -26,8 +26,8 @@ DEFAULT_PATH = Path(
 
 REQUIRED_FILES = [
     "02_Synthetic_USCT_Brain.mat",
-    "TrueVp.mat",
     "elementList.txt",
+    "elementRelas.txt",
     "signal_filtered.mat",
 ]
 
@@ -51,17 +51,32 @@ def test_loader_module_is_importable():
 @needs_data
 def test_load_synthetic_returns_required_fields():
     """``load_icl_dual_probe(path, mode='synthetic')`` returns a dict
-    with the fields the FWI pipeline needs."""
+    with the fields the FWI pipeline needs.
+
+    Note: ``true_velocity`` is intentionally absent — the synthetic
+    ground-truth file ``TrueVp.mat`` is missing from the published
+    archive (see docs/datasets/icl-dual-probe-2023.md).
+    """
     from brain_fwi.data.icl_dual_probe import load_icl_dual_probe
 
     sample = load_icl_dual_probe(DEFAULT_PATH, mode="synthetic")
-    expected = {
-        "traces",
-        "transducer_positions_m",
-        "source_signal",
-        "true_velocity",
-        "dt",
-        "src_recv_pairs",
-    }
-    missing = expected - set(sample.keys())
-    assert not missing, f"missing keys: {missing}"
+    try:
+        expected = {
+            "traces",
+            "transducer_positions_m",
+            "source_signal",
+            "dt",
+            "src_recv_pairs",
+        }
+        missing = expected - set(sample.keys())
+        assert not missing, f"missing keys: {missing}"
+
+        assert sample["traces"].shape == (442368, 3328)
+        assert sample["transducer_positions_m"].shape == (3072, 3)
+        assert sample["src_recv_pairs"].shape == (442368, 2)
+        assert sample["source_signal"].shape[1] == 384
+        assert sample["src_recv_pairs"].min() >= 0
+        assert sample["src_recv_pairs"].max() < 3072
+        assert sample["dt"] == pytest.approx(44e-9, rel=1e-3)
+    finally:
+        sample["_h5_file"].close()
