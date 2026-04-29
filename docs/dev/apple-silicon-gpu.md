@@ -79,6 +79,12 @@ CPU `.venv`:
   `pytestmark = pytest.mark.skipif(jax.default_backend() == "mps")`
   guard at the top of the file; that's the right pattern when a test
   *can* run fine on CPU but *can't* on MPS specifically.
+- `scripts/phase5_residual_fno_demo.py` — `pdequinox.ClassicFNO`
+  spectral conv layer hits a **second** scatter gap on MPS:
+  `[scatter] GPU scatter does not yet support complex64`. Different
+  failure mode from the j-Wave one (dtype, not shape-broadcast).
+  Anything using complex spectral convolutions through pdequinox or
+  jaxdf needs CPU until MLX adds complex64 scatter.
 
 If you add a new test that genuinely needs an NVIDIA GPU (not just any
 GPU), gate it with a CUDA-only fixture in `tests/conftest.py` instead

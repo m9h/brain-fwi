@@ -12,18 +12,15 @@ import jax.numpy as jnp
 import pytest
 
 
-@pytest.mark.xfail(
-    reason=(
-        "j-Wave time-domain simulate_wave_propagation does not consume "
-        "medium.attenuation (only the frequency-domain wavevector op does). "
-        "Fixing this requires Treeby & Cox 2010 power-law absorption "
-        "support. Test flips GREEN when implemented."
-    ),
-    strict=True,
-)
 def test_attenuation_changes_traces_for_skull_block():
     """A 32^3 cube with a centered skull block produces ≥5% rel-L2
-    different traces with vs without attenuation."""
+    different traces with vs without attenuation.
+
+    Phase 5 invariant: if attenuation has no effect on simulated traces,
+    the whole CANN α(ω) modelling effort is meaningless. This test
+    closed the XFAIL once Treeby-Cox-flavoured power-law absorption
+    landed in m9h/jwave (commit on `feature/time-domain-absorption`).
+    """
     from brain_fwi.simulation.forward import (
         _build_source_signal,
         build_domain,
@@ -41,11 +38,19 @@ def test_attenuation_changes_traces_for_skull_block():
     skull = jnp.zeros(grid, dtype=jnp.float32).at[12:20, 12:20, 12:20].set(1.0)
     c = jnp.where(skull > 0, 2800.0, c)
     rho = jnp.where(skull > 0, 1850.0, rho)
-    alpha_lossy = jnp.where(skull > 0, 4.0, alpha)  # dB/cm/MHz cortical bone
+    # 8 dB/cm/MHz^1.1 over the skull block — diploic-bone-magnitude with
+    # tissue-typical y=1.1 (Pinton et al. 2012). At the 500 kHz Ricker
+    # peak, predicts ~13 % single-pass amplitude reduction across 4 mm.
+    alpha_lossy = jnp.where(skull > 0, 8.0, alpha)
+    y_skull = 1.1
 
     domain = build_domain(grid, dx)
-    medium_lossless = build_medium(domain, c, rho, pml_size=4, attenuation=None)
-    medium_lossy = build_medium(domain, c, rho, pml_size=4, attenuation=alpha_lossy)
+    medium_lossless = build_medium(
+        domain, c, rho, pml_size=4, attenuation=None, alpha_power=y_skull,
+    )
+    medium_lossy = build_medium(
+        domain, c, rho, pml_size=4, attenuation=alpha_lossy, alpha_power=y_skull,
+    )
 
     # Use the lossless medium's CFL for both so dt is identical.
     time_axis = build_time_axis(medium_lossless, cfl=0.3, t_end=2e-5)

@@ -5,7 +5,7 @@
 | Layer | Status |
 |---|---|
 | Frequency-domain (Helmholtz) absorption with configurable y | ✅ working — `m9h/jwave@feature/configurable-alpha-power` |
-| Time-domain (`simulate_wave_propagation`) absorption | ❌ not started — gating xfail in `tests/test_attenuation_effect.py` |
+| Time-domain (`simulate_wave_propagation`) absorption | ✅ working — `m9h/jwave@feature/time-domain-absorption` |
 
 This document captures the implementation roadmap for the time-domain
 half. The frequency-domain half is already unblocked: `m9h/jwave`
@@ -32,19 +32,51 @@ The y=1.1 row is what `Phase 5`'s CANN α(ω) needs to plug into.
 y=2 alone produced systematically wrong-by-~2× attenuation
 magnitudes for tissue (see commit 92f8e1dc on the fork).
 
-## Time-domain (Treeby–Cox): scoped, not started
+## Time-domain absorption: done (FourierSeries path)
 
-Gating test:
+Gating test now PASSES:
 ```
-tests/test_attenuation_effect.py::test_attenuation_changes_traces_for_skull_block
-  XFAIL strict — j-Wave's time-domain simulate_wave_propagation does
-                 not consume medium.attenuation. Fixing requires Treeby
-                 & Cox 2010 power-law absorption support.
+tests/test_attenuation_effect.py::test_attenuation_changes_traces_for_skull_block PASSED
 ```
+8 dB/cm/MHz^1.1 in a 4 mm skull block, 500 kHz Ricker → ~13 % rel-L2
+between lossy and lossless 32³ traces. The `pytest.mark.xfail(strict=True)`
+decorator has been removed.
 
-Confirmed by reading j-Wave 0.2.1 source: `simulate_wave_propagation`
-has zero references to attenuation in either the OnGrid or
-FourierSeries paths.
+Implementation: a single new function ``apply_absorption_fourier`` in
+`jwave/acoustics/time_varying.py` that integrates the per-step
+absorption term
+
+    ∂p/∂t ⊃ -α₀ · c^(y+1) · (-∇²)^(y/2) p
+
+via FFT, wired into the FourierSeries `scan_fun` symplectic step right
+after `pressure_from_density`. No-op when `medium.attenuation` is
+zero or unset, so existing lossless callers are unchanged.
+
+This drops Treeby–Cox 2010 eq 11's `1/sin(π y / 2)` pole (so the
+operator is defined at y = 2) and reshapes the spectral exponent
+from `(y+1)/2` to `y/2`. The two forms agree on plane-wave decay
+rate in homogeneous media and match the frequency-domain wavevector
+op's `Im(k) = α(ω) = α₀ω^y` to leading order in α.
+
+OnGrid path is left untouched; brain-fwi's `build_medium` routes
+through FourierSeries by default.
+
+### What's next on this front
+
+- **Upstream PR.** Both fork commits (configurable-alpha-power +
+  time-domain-absorption) are clean, additive, backwards-compatible.
+  Open a PR `m9h/jwave → ucl-bug/jwave` once we've shipped one or
+  two FWI experiments through this stack.
+- **Optional dispersion term.** The companion `L_η ∂p/∂t` was
+  intentionally skipped — phase-velocity dispersion is supplied at
+  the constitutive layer via Kramers–Kronig and a frequency-dependent
+  `sound_speed`. If that strategy proves insufficient (e.g. residual
+  phase error in inversion), add `L_η`.
+- **OnGrid path.** Left untouched. Add the same hook if any caller
+  needs the OnGrid solver.
+- **CFL adjustment.** Treeby–Cox §IV recommends a `~(0.9)^(2-y)`
+  factor on `dt`. Not yet applied; `build_time_axis` ignores `y`.
+  Add if stability issues surface at large y or coarse grids.
 
 ### Where the work lands: m9h/jwave fork (sibling commit)
 
