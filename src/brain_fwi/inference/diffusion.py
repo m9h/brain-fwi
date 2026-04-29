@@ -185,3 +185,114 @@ def train_score_matching(
         losses.append(float(loss))
 
     return model, losses
+
+
+def ddim_step(
+    score_fn,
+    sde: VPSDE,
+    theta_t: jax.Array,
+    t: jax.Array,
+    t_next: jax.Array,
+) -> jax.Array:
+    """One deterministic DDIM update from ``t`` to ``t_next``.
+
+    Tweedie-denoise to ``θ̂_0`` using the score, then renoise to the
+    next time level::
+
+        θ̂_0          = (θ_t + σ(t)² · s) / α(t)
+        ε̂            = -σ(t) · s             # implied noise
+        θ_{t_next}   = α(t_next) · θ̂_0 + σ(t_next) · ε̂
+
+    Substituting:
+
+        θ_{t_next} = (α(t_next) / α(t)) · θ_t
+                     + (α(t_next)·σ(t)² / α(t) − σ(t_next)·σ(t)) · s
+
+    With ``t_next = t`` this collapses to identity by construction.
+    """
+    s = score_fn(theta_t, t)
+    a_t, s_t = sde.alpha(t), sde.sigma(t)
+    a_n, s_n = sde.alpha(t_next), sde.sigma(t_next)
+    theta_hat_0 = (theta_t + (s_t ** 2) * s) / a_t
+    eps_hat = -s_t * s
+    return a_n * theta_hat_0 + s_n * eps_hat
+
+
+def ddim_sample(
+    score_fn,
+    sde: VPSDE,
+    *,
+    n_samples: int,
+    dim: int,
+    n_steps: int,
+    key: jax.Array,
+    t_min: float = 1e-3,
+    t_max: float = 1.0,
+) -> jax.Array:
+    """Deterministic DDIM reverse trajectory from ``t_max`` to ``t_min``.
+
+    Draws ``n_samples`` initial points from ``N(0, I)`` at ``t_max``
+    and runs ``n_steps`` DDIM updates along a uniform ``t``-grid down
+    to ``t_min``. Output shape ``(n_samples, dim)``.
+
+    Per-sample updates are vectorised with ``jax.vmap`` so the score
+    network sees one ``θ`` at a time (matching its training-time
+    signature).
+    """
+    theta = jr.normal(key, (n_samples, dim))
+    ts = jnp.linspace(t_max, t_min, n_steps + 1)
+
+    def body(theta, i):
+        t = ts[i]
+        t_next = ts[i + 1]
+        new_theta = jax.vmap(
+            lambda x: ddim_step(score_fn, sde, x, t, t_next)
+        )(theta)
+        return new_theta, None
+
+    final, _ = jax.lax.scan(body, theta, jnp.arange(n_steps))
+    return final
+
+
+def em_sample(
+    score_fn,
+    sde: VPSDE,
+    *,
+    n_samples: int,
+    dim: int,
+    n_steps: int,
+    key: jax.Array,
+    t_min: float = 1e-3,
+    t_max: float = 1.0,
+) -> jax.Array:
+    """Stochastic Euler-Maruyama sampler on the reverse VP SDE.
+
+    Reverse-time SDE for VP: ``dθ = [-½β·θ − β·s] dt + √β dw̄``.
+    Discretised backward Euler over ``n_steps`` uniform t-grid points
+    from ``t_max`` down to ``t_min``::
+
+        Δt    = t − t_next
+        drift = -½β(t)·θ − β(t)·s_φ(θ, t)
+        θ_next = θ − drift·Δt + √(β(t)·Δt) · z,   z ~ N(0, I)
+
+    Output shape ``(n_samples, dim)``.
+    """
+    key, subkey = jr.split(key)
+    theta = jr.normal(subkey, (n_samples, dim))
+    ts = jnp.linspace(t_max, t_min, n_steps + 1)
+
+    def body(carry, i):
+        theta, key = carry
+        t, t_next = ts[i], ts[i + 1]
+        dt = t - t_next
+        beta_t = sde.beta(t)
+
+        s = jax.vmap(lambda x: score_fn(x, t))(theta)
+        drift = -0.5 * beta_t * theta - beta_t * s
+        key, sk = jr.split(key)
+        z = jr.normal(sk, theta.shape)
+        new_theta = theta - drift * dt + jnp.sqrt(beta_t * dt) * z
+        return (new_theta, key), None
+
+    (final, _), _ = jax.lax.scan(body, (theta, key), jnp.arange(n_steps))
+    return final

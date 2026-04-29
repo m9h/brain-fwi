@@ -140,3 +140,98 @@ def test_score_net_recovers_analytic_score_on_unit_gaussian():
     assert median_rel_err < 0.20, (
         f"trained score median rel-err {median_rel_err:.3f} > 0.20"
     )
+
+
+def test_ddim_step_is_identity_when_t_next_equals_t():
+    """A DDIM update with t_next == t leaves θ unchanged regardless
+    of the score function — the canonical sanity test for any
+    reverse-step implementation.
+    """
+    from brain_fwi.inference.diffusion import VPSDE, ddim_step
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+    theta_t = jnp.array([0.3, -0.7, 1.2, 0.0])
+    t = jnp.array(0.5)
+
+    def arbitrary_score(x, tt):
+        return -x  # any nonzero output should not matter
+
+    theta_next = ddim_step(arbitrary_score, sde, theta_t, t, t)
+    assert jnp.allclose(theta_next, theta_t, atol=1e-7)
+
+
+def test_ddim_sample_returns_correct_shape_and_is_deterministic():
+    """``ddim_sample(score, sde, n_samples=N, dim=D, ...)`` produces
+    ``(N, D)`` output and is deterministic in the supplied PRNG key.
+    """
+    from brain_fwi.inference.diffusion import VPSDE, ddim_sample
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+
+    def arbitrary_score(x, t):
+        return -x
+
+    out_a = ddim_sample(
+        arbitrary_score, sde,
+        n_samples=32, dim=4, n_steps=20, key=jr.PRNGKey(0),
+    )
+    out_b = ddim_sample(
+        arbitrary_score, sde,
+        n_samples=32, dim=4, n_steps=20, key=jr.PRNGKey(0),
+    )
+    out_c = ddim_sample(
+        arbitrary_score, sde,
+        n_samples=32, dim=4, n_steps=20, key=jr.PRNGKey(7),
+    )
+    assert out_a.shape == (32, 4)
+    assert jnp.allclose(out_a, out_b), "different runs with same key diverged"
+    assert not jnp.allclose(out_a, out_c), "different keys produced same output"
+
+
+def test_em_sample_returns_correct_shape_and_is_deterministic():
+    """Stochastic Euler-Maruyama reverse sampler API + determinism."""
+    from brain_fwi.inference.diffusion import VPSDE, em_sample
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+
+    def arbitrary_score(x, t):
+        return -x
+
+    out_a = em_sample(
+        arbitrary_score, sde,
+        n_samples=32, dim=4, n_steps=100, key=jr.PRNGKey(0),
+    )
+    out_b = em_sample(
+        arbitrary_score, sde,
+        n_samples=32, dim=4, n_steps=100, key=jr.PRNGKey(0),
+    )
+    out_c = em_sample(
+        arbitrary_score, sde,
+        n_samples=32, dim=4, n_steps=100, key=jr.PRNGKey(7),
+    )
+    assert out_a.shape == (32, 4)
+    assert jnp.allclose(out_a, out_b)
+    assert not jnp.allclose(out_a, out_c)
+
+
+def test_em_sample_with_perfect_score_recovers_unit_gaussian_moments():
+    """§7 step 2 gate analogue for the toy prior: with the analytic
+    score on unit Gaussian, Euler-Maruyama samples should have
+    sample mean ≈ 0 and sample variance ≈ 1 (within the discretization
+    error budget)."""
+    from brain_fwi.inference.diffusion import VPSDE, em_sample
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+
+    def perfect_score(theta_t, t):
+        return -theta_t
+
+    samples = em_sample(
+        perfect_score, sde,
+        n_samples=2048, dim=2, n_steps=400, key=jr.PRNGKey(0),
+        t_min=0.01,
+    )
+    mean = jnp.mean(samples, axis=0)
+    var = jnp.var(samples, axis=0)
+    assert jnp.all(jnp.abs(mean) < 0.15), f"sample mean off: {mean}"
+    assert jnp.all(jnp.abs(var - 1.0) < 0.30), f"sample var off: {var}"
