@@ -74,11 +74,16 @@ CPU `.venv`:
   — `stablehlo.scatter` dispatch fails with a broadcast-shape mismatch
   on the source-seeding pattern j-Wave uses. Affects forward sims with
   point sources via `vmap`d scatter.
+- `tests/test_icl_forward_sim_parity.py::test_jwave_forward_matches_geometric_tof_in_water`
+  — same `stablehlo.scatter` gap. Skipped automatically on MPS via a
+  `pytestmark = pytest.mark.skipif(jax.default_backend() == "mps")`
+  guard at the top of the file; that's the right pattern when a test
+  *can* run fine on CPU but *can't* on MPS specifically.
 
-If you add a new test that needs GPU but can't run on MPS, gate it
-with the existing pattern in `tests/conftest.py` (or with a CUDA-only
-mark) rather than skipping per-platform — the cloud runners exist for
-exactly this.
+If you add a new test that genuinely needs an NVIDIA GPU (not just any
+GPU), gate it with a CUDA-only fixture in `tests/conftest.py` instead
+of duplicating the MPS-skip — the cloud runners exist for exactly
+that case.
 
 ## See also
 

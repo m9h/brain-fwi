@@ -22,8 +22,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import jax
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    jax.default_backend() == "mps",
+    reason=(
+        "j-Wave's source-seeding uses lax.scatter, which has a known "
+        "broadcast-shape gap on the MPS backend. CPU and NVIDIA work. "
+        "See docs/dev/apple-silicon-gpu.md."
+    ),
+)
 
 DEFAULT_PATH = Path(
     os.environ.get(
