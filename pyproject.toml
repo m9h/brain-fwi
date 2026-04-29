@@ -13,7 +13,12 @@ authors = [{ name = "Morgan Hough" }]
 
 dependencies = [
     "jax>=0.5.0",
-    "jwave @ git+https://github.com/ucl-bug/jwave.git",
+    # Fork pinned for `alpha_power` on `Medium` (configurable y exponent
+    # in the frequency-domain wavevector op). Upstream hardcodes y=2,
+    # which is wrong for tissue/skull (empirical y ≈ 0.9–1.1). Required
+    # by Phase 5 — see docs/design/phase5_treeby_cox_absorption.md.
+    # Drop the @branch pin once the patch lands in ucl-bug/jwave.
+    "jwave @ git+https://github.com/m9h/jwave.git@feature/configurable-alpha-power",
     "jaxdf @ git+https://github.com/ucl-bug/jaxdf.git",
     "equinox>=0.11.0",
     "optax>=0.2.0",
