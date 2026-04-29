@@ -27,6 +27,7 @@ from typing import Any, List, Literal, Mapping, Tuple, Union
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from ..inversion.param_field import SIREN
@@ -154,4 +155,44 @@ def build_theta_d_matrix(
         np.stack(theta_rows, axis=0),
         np.stack(d_rows, axis=0),
         ids,
+    )
+
+
+def load_theta_matrix(reader, sample_ids=None) -> jax.Array:
+    """Stack θ vectors from a Phase-0 reader into ``(N, D)``.
+
+    Phase 3 step-1 helper (``docs/design/phase3_diffusion_prior.md``
+    §9). Bridge from a ``ShardedReader`` to the matrix consumed by
+    ``brain_fwi.inference.diffusion.train_score_matching``.
+
+    Args:
+        reader: anything with sample dicts. If ``sample_ids`` is given,
+            ``reader[sid]`` must work; otherwise the reader is iterated.
+        sample_ids: optional subset of sample ids to load (list of str
+            or list of ints).
+
+    Returns:
+        ``(N, D)`` float32 ``jnp.ndarray``.
+
+    Raises:
+        ValueError if the loaded samples have heterogeneous θ
+        dimensions (e.g. mixed SIREN architectures — the
+        ``hidden=128`` vs ``hidden=64`` collision the Phase-0b
+        handoff doc warned about).
+    """
+    if sample_ids is not None:
+        rows = [theta_from_sample(reader[sid]) for sid in sample_ids]
+    else:
+        rows = [theta_from_sample(s) for s in reader]
+    if not rows:
+        raise ValueError("no samples to load")
+
+    dims = {r.shape[0] for r in rows}
+    if len(dims) > 1:
+        raise ValueError(
+            f"heterogeneous θ dimensions in dataset: {sorted(dims)}. "
+            "All samples must use the same SIREN architecture."
+        )
+    return jnp.stack(
+        [jnp.asarray(r, dtype=jnp.float32) for r in rows], axis=0,
     )
