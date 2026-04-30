@@ -1,8 +1,0 @@
-{
-    "m2m": "testdata/m2m_subject",
-    "grid_size": 96,
-    "dx": 0.002,
-    "n_elements": 128,
-    "frequency": 500000.0,
-    "shots": 1
-}
