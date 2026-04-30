@@ -1,0 +1,45 @@
+{
+  "args": {
+    "mida_path": "data/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii",
+    "slice_axis": 2,
+    "slice_idx": 215,
+    "grid_size": 192,
+    "n_receivers": 256,
+    "n_sources": 64,
+    "shots_per_iter": 4,
+    "iters_per_band": 5,
+    "learning_rate": 50.0,
+    "output_dir": "results/vhd_mida",
+    "quick": true
+  },
+  "stages": {
+    "load": {
+      "sec": 0.18754792213439941,
+      "slice_idx": 215,
+      "n_unique_labels": 73
+    },
+    "resample": {
+      "sec": 0.0002422332763671875,
+      "dx_m": 0.00125
+    },
+    "observed": {
+      "sec": 64.19867300987244,
+      "shape": [
+        64,
+        1706,
+        256
+      ],
+      "sec_per_shot": 1.0031042657792568
+    },
+    "fwi": {
+      "sec": 317.723601102829,
+      "n_total_iters": 15,
+      "sec_per_iter": 21.181573406855264,
+      "final_loss": 0.07353588752448559
+    }
+  },
+  "reconstruction": {
+    "rmse_m_s": 2.448180675506592,
+    "mae_m_s": 215.3934783935547
+  }
+}
