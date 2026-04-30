@@ -298,6 +298,67 @@ def test_compose_siren_grad_with_zero_score_returns_grads_unchanged():
         assert jnp.allclose(jnp.asarray(a), jnp.asarray(b))
 
 
+def test_dps_sample_with_zero_zeta_matches_em_sample():
+    """DPS with the likelihood weight ``ζ = 0`` reduces exactly to the
+    unconditional EM sampler — the canonical sanity check on the
+    posterior-sampling extension."""
+    from brain_fwi.inference.diffusion import VPSDE, dps_sample, em_sample
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+
+    def perfect_score(theta_t, t):
+        return -theta_t
+
+    def trivial_log_lik(theta):
+        return jnp.array(0.0)  # log p(d|θ) = const → score_lik = 0 anyway
+
+    em = em_sample(
+        perfect_score, sde,
+        n_samples=64, dim=2, n_steps=50, key=jr.PRNGKey(0),
+    )
+    dps = dps_sample(
+        perfect_score, sde, trivial_log_lik,
+        n_samples=64, dim=2, n_steps=50, zeta=0.0, key=jr.PRNGKey(0),
+    )
+    assert jnp.allclose(em, dps, atol=1e-5), (
+        f"DPS with ζ=0 diverged from EM (max diff "
+        f"{float(jnp.max(jnp.abs(em - dps))):.2e})"
+    )
+
+
+def test_dps_sample_recovers_posterior_mean_on_gaussian_pair():
+    """Conjugate-Gaussian sanity: prior N(0, I) + likelihood
+    N(d | θ, σ² I) ⇒ posterior N(d/(1+σ²), σ²/(1+σ²) I).
+
+    DPS samples should have mean within ±0.20 of d/(1+σ²).
+    """
+    from brain_fwi.inference.diffusion import VPSDE, dps_sample
+
+    sde = VPSDE(beta_min=0.1, beta_max=20.0)
+
+    def perfect_score(theta_t, t):
+        return -theta_t
+
+    d_obs = jnp.array([1.5, -1.0])
+    sigma2 = 0.1
+
+    def log_lik(theta):
+        return -0.5 * jnp.sum((d_obs - theta) ** 2) / sigma2
+
+    samples = dps_sample(
+        perfect_score, sde, log_lik,
+        n_samples=2048, dim=2, n_steps=400, zeta=1.0,
+        key=jr.PRNGKey(0), t_min=0.01,
+    )
+    expected_mean = d_obs / (1.0 + sigma2)
+    sample_mean = jnp.mean(samples, axis=0)
+    err = jnp.abs(sample_mean - expected_mean)
+    assert jnp.all(err < 0.20), (
+        f"DPS posterior mean off: got {sample_mean}, "
+        f"expected ≈ {expected_mean}"
+    )
+
+
 def test_compose_siren_grad_recovers_correct_total_norm_shift():
     """Score = -θ (analytic for unit Gaussian) ⇒ composite_grad =
     grads + λ·θ (after sign analysis). The total l2-norm of the

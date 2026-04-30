@@ -298,6 +298,75 @@ def em_sample(
     return final
 
 
+def dps_sample(
+    score_fn,
+    sde: VPSDE,
+    log_likelihood_fn,
+    *,
+    n_samples: int,
+    dim: int,
+    n_steps: int,
+    zeta: float,
+    key: jax.Array,
+    t_min: float = 1e-3,
+    t_max: float = 1.0,
+) -> jax.Array:
+    """Diffusion Posterior Sampling (Chung et al. 2023, §9.7).
+
+    Reverse Euler-Maruyama on the VP SDE, with the score augmented by
+    a per-step likelihood gradient evaluated at the Tweedie-denoised
+    estimate ``θ̂_0``::
+
+        s_total = s_prior + ζ · ∇_{θ_t} log p(d | θ̂_0(θ_t, t))
+
+    where ``θ̂_0(θ_t, t) = (θ_t + σ²·s_prior) / α``. With ``zeta = 0``
+    this reduces to :func:`em_sample` (verified by test).
+
+    Args:
+        score_fn: trained ``s_φ(θ, t)``.
+        sde: VP schedule.
+        log_likelihood_fn: scalar log-likelihood of observation given
+            θ̂_0. Inputs the denoised θ̂_0 (D,), returns a scalar.
+        n_samples, dim, n_steps: sampler shape + step budget.
+        zeta: guidance strength (Phase 3 §5).
+        key: PRNG key.
+
+    Returns:
+        ``(n_samples, dim)`` posterior samples.
+    """
+    key, subkey = jr.split(key)
+    theta = jr.normal(subkey, (n_samples, dim))
+    ts = jnp.linspace(t_max, t_min, n_steps + 1)
+
+    def per_sample_total_score(x, t):
+        s_prior = score_fn(x, t)
+        if zeta == 0.0:
+            return s_prior
+        # Tweedie's denoising: θ̂_0 = (θ_t + σ²·s) / α.
+        def lik_through_denoise(theta_t):
+            s = score_fn(theta_t, t)
+            theta_hat_0 = (theta_t + (sde.sigma(t) ** 2) * s) / sde.alpha(t)
+            return log_likelihood_fn(theta_hat_0)
+        s_lik = jax.grad(lik_through_denoise)(x)
+        return s_prior + zeta * s_lik
+
+    def body(carry, i):
+        theta, key = carry
+        t, t_next = ts[i], ts[i + 1]
+        dt = t - t_next
+        beta_t = sde.beta(t)
+
+        s_total = jax.vmap(lambda x: per_sample_total_score(x, t))(theta)
+        drift = -0.5 * beta_t * theta - beta_t * s_total
+        key, sk = jr.split(key)
+        z = jr.normal(sk, theta.shape)
+        new_theta = theta - drift * dt + jnp.sqrt(beta_t * dt) * z
+        return (new_theta, key), None
+
+    (final, _), _ = jax.lax.scan(body, (theta, key), jnp.arange(n_steps))
+    return final
+
+
 def score_prior_grad_term(
     score_fn,
     theta: jax.Array,
