@@ -6,6 +6,7 @@ Each test was written failing first, then minimum code to GREEN.
 
 from __future__ import annotations
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -266,3 +267,72 @@ def test_score_prior_grad_term_zero_when_weight_zero():
     theta = jnp.array([1.0, -2.0, 0.5])
     out = score_prior_grad_term(score_fn, theta, t_eps=0.01, weight=0.0)
     assert jnp.allclose(out, jnp.zeros_like(theta))
+
+
+def test_compose_siren_grad_with_zero_score_returns_grads_unchanged():
+    """With a zero score function, the composite gradient pytree is
+    bit-identical to the input gradient pytree."""
+    from brain_fwi.inference.diffusion import compose_siren_grad_with_score_prior
+    from brain_fwi.inversion.param_field import SIREN
+
+    field = SIREN(
+        in_dim=3, hidden_dim=8, n_hidden=2, out_dim=1,
+        omega_0=30.0, key=jr.PRNGKey(0),
+    )
+    grads = jax.tree.map(
+        lambda x: jnp.ones_like(x) if eqx.is_inexact_array(x) else x,
+        eqx.filter(field, eqx.is_inexact_array),
+    )
+
+    def zero_score(theta, t):
+        return jnp.zeros_like(theta)
+
+    composed = compose_siren_grad_with_score_prior(
+        grads, field, zero_score, weight=0.5, t_eps=0.01,
+    )
+    leaves_in = jax.tree.leaves(grads)
+    leaves_out = jax.tree.leaves(composed)
+    for a, b in zip(leaves_in, leaves_out):
+        if a is None or b is None:
+            continue
+        assert jnp.allclose(jnp.asarray(a), jnp.asarray(b))
+
+
+def test_compose_siren_grad_recovers_correct_total_norm_shift():
+    """Score = -θ (analytic for unit Gaussian) ⇒ composite_grad =
+    grads + λ·θ (after sign analysis). The total l2-norm of the
+    composite grads' inexact leaves should differ from the input by
+    the predicted amount.
+    """
+    import equinox as eqx_mod
+    from brain_fwi.inference.diffusion import compose_siren_grad_with_score_prior
+    from brain_fwi.inversion.param_field import SIREN
+
+    field = SIREN(
+        in_dim=3, hidden_dim=8, n_hidden=2, out_dim=1,
+        omega_0=30.0, key=jr.PRNGKey(0),
+    )
+    grads = jax.tree.map(
+        lambda x: jnp.zeros_like(x) if eqx.is_inexact_array(x) else x,
+        eqx.filter(field, eqx_mod.is_inexact_array),
+    )
+
+    def neg_theta_score(theta, t):
+        return -theta  # → grad term = -λ · (-θ) = +λ θ
+
+    weight = 0.3
+    composed = compose_siren_grad_with_score_prior(
+        grads, field, neg_theta_score, weight=weight, t_eps=0.01,
+    )
+    # Gather the inexact leaves of the field as a flat vector.
+    field_leaves = jax.tree.leaves(eqx.filter(field, eqx_mod.is_inexact_array))
+    theta_flat = jnp.concatenate([jnp.asarray(l).ravel() for l in field_leaves])
+    expected_l2 = float(jnp.linalg.norm(weight * theta_flat))
+
+    composed_leaves = jax.tree.leaves(eqx.filter(composed, eqx_mod.is_inexact_array))
+    composed_flat = jnp.concatenate(
+        [jnp.asarray(l).ravel() for l in composed_leaves]
+    )
+    assert float(jnp.linalg.norm(composed_flat)) == pytest.approx(
+        expected_l2, rel=1e-5,
+    )

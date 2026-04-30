@@ -333,3 +333,50 @@ def score_prior_grad_term(
     if weight == 0.0:
         return jnp.zeros_like(theta)
     return -weight * score_fn(theta, jnp.asarray(t_eps))
+
+
+def compose_siren_grad_with_score_prior(
+    grads,
+    field,
+    score_fn,
+    *,
+    weight: float,
+    t_eps: float = 0.01,
+):
+    """Add a score-prior regulariser term to a SIREN gradient pytree.
+
+    The SIREN gradient pipeline operates on Equinox pytrees, but the
+    score net consumes a flat θ vector. This helper:
+
+      1. Flattens ``field``'s inexact-array leaves to a 1-D θ vector.
+      2. Computes ``-λ · s_φ(θ, t_eps)`` via :func:`score_prior_grad_term`.
+      3. Unravels that flat term back into the field-shaped pytree.
+      4. Adds it to ``grads`` leaf-wise.
+
+    Args:
+        grads: gradient pytree (same structure as ``field``'s inexact
+            leaves) returned by ``eqx.filter_value_and_grad``.
+        field: current SIRENField / SIREN module.
+        score_fn: ``(θ, t) → ℝ^D`` score callable.
+        weight: Phase 3 §4 ``λ``. ``0`` short-circuits.
+        t_eps: small noise level at which to evaluate the score.
+
+    Returns:
+        New gradient pytree.
+    """
+    if weight == 0.0:
+        return grads
+
+    inexact = eqx.filter(field, eqx.is_inexact_array)
+    theta_flat, unravel = jax.flatten_util.ravel_pytree(inexact)
+    grad_term_flat = score_prior_grad_term(
+        score_fn, theta_flat, t_eps=t_eps, weight=weight,
+    )
+    grad_term_tree = unravel(grad_term_flat)
+
+    def _add(g, t):
+        if g is None or t is None:
+            return g
+        return g + t
+
+    return jax.tree.map(_add, grads, grad_term_tree)
