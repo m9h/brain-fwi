@@ -84,6 +84,7 @@ class CToTraceFNO3D(eqx.Module):
     n_timesteps: int = eqx.field(static=True)
     n_receivers: int = eqx.field(static=True)
     hidden_channels: int = eqx.field(static=True)
+    output_scale: float
 
     def __init__(
         self,
@@ -94,6 +95,7 @@ class CToTraceFNO3D(eqx.Module):
         hidden_channels: int = 32,
         num_modes: int = 12,
         depth: int = 2,
+        output_scale: float = 1.0,
         key: jax.Array,
     ):
         fno_key, head_key = jr.split(key)
@@ -101,6 +103,7 @@ class CToTraceFNO3D(eqx.Module):
         self.n_timesteps = int(n_timesteps)
         self.n_receivers = int(n_receivers)
         self.hidden_channels = int(hidden_channels)
+        self.output_scale = float(output_scale)
 
         self.backbone = UNONet(
             num_spatial_dims=3,
@@ -138,4 +141,5 @@ class CToTraceFNO3D(eqx.Module):
         features = self.backbone(x)                    # (hidden_channels, D, H, W)
         pooled = jnp.mean(features, axis=(1, 2, 3))  # (hidden_channels,)
         flat = self.head(pooled)                  # (n_t * n_recv,)
-        return flat.reshape(self.n_timesteps, self.n_receivers)
+        scaled = self.output_scale * flat
+        return scaled.reshape(self.n_timesteps, self.n_receivers)

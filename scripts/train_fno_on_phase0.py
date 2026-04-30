@@ -22,7 +22,18 @@ import numpy as np
 from brain_fwi.data import ShardedReader
 from brain_fwi.surrogate.fno3d import CToTraceFNO3D
 from brain_fwi.surrogate.train import train_fno_surrogate
-from brain_fwi.surrogate.validation import trace_fidelity, format_gate_report
+from brain_fwi.surrogate.validation import (
+    trace_fidelity,
+    format_gate_report,
+    gradient_accuracy,
+    _predict_all_shots,
+)
+from brain_fwi.simulation.forward import (
+    build_domain,
+    build_medium,
+    build_time_axis,
+    simulate_shot_sensors,
+)
 
 
 def main() -> int:
@@ -72,9 +83,20 @@ def main() -> int:
     grid_shape = c_voxel.shape
     n_t, n_recv = d_true.shape[1], d_true.shape[2]
 
+    # Compute output scale (target.std() across dataset)
+    # Sample up to 10 random training items to estimate std
+    print("  estimating output scale...")
+    n_est = min(len(train_ids), 10)
+    est_stds = []
+    for i in range(n_est):
+        d_est = reader[train_ids[i]]["observed_data"]
+        est_stds.append(float(np.std(d_est)))
+    output_scale = float(np.mean(est_stds))
+
     print(f"  grid_shape:   {grid_shape}")
     print(f"  n_t:          {n_t}")
     print(f"  n_receivers:  {n_recv}")
+    print(f"  output_scale: {output_scale:.4e}")
     print(f"  architecture: hidden={args.hidden_channels}, modes={args.num_modes}, depth={args.depth}")
 
     key = jr.PRNGKey(args.seed)
@@ -87,6 +109,7 @@ def main() -> int:
         hidden_channels=args.hidden_channels,
         num_modes=args.num_modes,
         depth=args.depth,
+        output_scale=output_scale,
         key=model_key,
     )
 
@@ -111,18 +134,69 @@ def main() -> int:
     print("=" * 70)
     
     held_out_samples = [reader[sid] for sid in held_out_ids]
-    # We need to resolve source_positions from the reader as well
-    # train_fno_surrogate has a helper _extract_source_positions, but it's internal.
-    # We'll re-implement or pull it.
     from brain_fwi.surrogate.train import _extract_source_positions
     src_pos = _extract_source_positions(first)
 
-    metrics = trace_fidelity(
+    trace_metrics = trace_fidelity(
         trained,
         held_out_samples,
         source_positions=src_pos,
     )
-    print(format_gate_report(metrics))
+
+    # --- Gradient Accuracy (§7.3) ---------------------------------------
+    print("\n" + "=" * 70)
+    print("  Validation (§7.3 Gradient-accuracy Gate)")
+    print("=" * 70)
+    
+    n_grad = min(len(held_out_ids), 20)
+    grad_ids = held_out_ids[:n_grad]
+    grad_samples = [reader[sid] for sid in grad_ids]
+    
+    # Pre-build j-Wave components from the first sample
+    dx = float(first["dx"])
+    freq = float(first.get("frequency", 500000.0))
+    domain = build_domain(grid_shape, dx)
+    
+    # Assume fixed density for gradient comparison
+    rho_const = jnp.asarray(first["density_voxel"], dtype=jnp.float32)
+
+    def surrogate_fwd(c_v):
+        c_n = (c_v - 1400.0) / (3200.0 - 1400.0)
+        return _predict_all_shots(trained, c_n, src_pos)
+
+    def jwave_fwd(c_v):
+        medium = build_medium(domain, c_v, rho_const)
+        # We need a time_axis and signal that match the model's n_timesteps
+        dt_val = float(first.get("dt", 0.3 * dx / 3200.0))
+        sig = jnp.asarray(first["source_signal"], dtype=jnp.float32)
+        if len(sig) > trained.n_timesteps:
+            sig = sig[:trained.n_timesteps]
+        
+        from jwave.geometry import TimeAxis
+        t_axis = TimeAxis(t_end=float(trained.n_timesteps * dt_val), dt=dt_val)
+
+        # Convert src_pos list to sensor grid tuple
+        sensor_grid = (
+            jnp.array([s[0] for s in src_pos]),
+            jnp.array([s[1] for s in src_pos]),
+            jnp.array([s[2] for s in src_pos]),
+        )
+
+        return jnp.stack([
+            simulate_shot_sensors(medium, t_axis, src, sensor_grid, sig, dt_val)
+            for src in src_pos
+        ], axis=0)
+
+    # Use a subset of velocity fields for speed
+    c_grad_samples = [jnp.asarray(s["sound_speed_voxel"], dtype=jnp.float32) for s in grad_samples]
+    
+    grad_metrics = gradient_accuracy(
+        surrogate_forward=surrogate_fwd,
+        jwave_forward=jwave_fwd,
+        c_samples=c_grad_samples,
+    )
+    
+    print(format_gate_report(trace_metrics, grad_metrics))
 
     # --- Persist --------------------------------------------------------
     out_dir = args.out if args.out.is_dir() else args.out.parent
@@ -135,7 +209,8 @@ def main() -> int:
     
     report = {
         "config": vars(args),
-        "metrics": metrics,
+        "metrics": trace_metrics,
+        "grad_metrics": grad_metrics,
         "loss_history": [float(l) for l in losses],
         "train_time_s": train_time,
     }

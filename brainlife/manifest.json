@@ -1,0 +1,55 @@
+{
+    "name": "Transcranial USCT Forward Simulation",
+    "description": "Simulate transcranial ultrasound computed tomography (USCT) using JAX-based full-wave simulation. Takes a SimNIBS (CHARM) segmentation and produces simulated sensor data.",
+    "tag": ["ultrasound", "simulation", "JAX", "j-Wave", "USCT"],
+    "author": "Morgan Hough",
+    "maintainer": "Morgan Hough",
+    "github": "https://github.com/mghough/brain-fwi",
+    "citation": "Stanziola et al. (2022). j-Wave. arXiv:2207.01499.",
+    "inputs": [
+        {
+            "id": "m2m",
+            "type": "neuro/m2m",
+            "desc": "SimNIBS m2m directory containing tissue_labeling.nii.gz"
+        }
+    ],
+    "outputs": [
+        {
+            "id": "usct",
+            "type": "raw",
+            "desc": "Simulated USCT data (HDF5) and summary figures",
+            "files": [
+                "simulation.h5",
+                "phantom.png",
+                "wavefield.png"
+            ]
+        }
+    ],
+    "config": {
+        "grid_size": {
+            "type": "integer",
+            "default": 96,
+            "desc": "Grid dimension (NxNxN). Use 96 for quick tests, 192 for high fidelity."
+        },
+        "dx": {
+            "type": "number",
+            "default": 0.002,
+            "desc": "Grid spacing in meters (e.g. 0.002 = 2mm)."
+        },
+        "n_elements": {
+            "type": "integer",
+            "default": 128,
+            "desc": "Number of transducer elements in the helmet array."
+        },
+        "frequency": {
+            "type": "number",
+            "default": 500000.0,
+            "desc": "Source center frequency in Hz."
+        },
+        "shots": {
+            "type": "integer",
+            "default": 1,
+            "desc": "Number of source shots to simulate."
+        }
+    }
+}
