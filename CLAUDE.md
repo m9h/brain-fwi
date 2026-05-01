@@ -56,3 +56,7 @@ uv run python examples/01_2d_axial_fwi.py      # 2D demo (CPU ok)
 uv run python examples/02_3d_brain_fwi.py       # 3D (needs GPU)
 uv run pytest tests/ -v                          # tests
 ```
+
+Apple Silicon GPU is available via an optional `.venv-mps` sidecar venv.
+See `docs/dev/apple-silicon-gpu.md` for setup and the list of tests
+that won't run there (notably the `scatter`-using forward-sim tests).

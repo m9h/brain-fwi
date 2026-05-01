@@ -127,7 +127,7 @@ requires-dist = [
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda12'", specifier = ">=0.5.0" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.5.0" },
     { name = "jaxdf", git = "https://github.com/ucl-bug/jaxdf.git" },
-    { name = "jwave", git = "https://github.com/ucl-bug/jwave.git" },
+    { name = "jwave", git = "https://github.com/m9h/jwave.git?rev=feature%2Ftime-domain-absorption" },
     { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=2.0" },
     { name = "nibabel", specifier = ">=5.0.0" },
@@ -768,7 +768,7 @@ wheels = [
 [[package]]
 name = "jwave"
 version = "0.2.1"
-source = { git = "https://github.com/ucl-bug/jwave.git#d1918f4e6adbf3822108e0af8034063efed1d581" }
+source = { git = "https://github.com/m9h/jwave.git?rev=feature%2Ftime-domain-absorption#495f4a1b7ad176411332c07ae289c9572b93fa11" }
 dependencies = [
     { name = "jaxdf" },
     { name = "matplotlib" },

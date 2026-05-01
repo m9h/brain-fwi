@@ -13,7 +13,16 @@ authors = [{ name = "Morgan Hough" }]
 
 dependencies = [
     "jax>=0.5.0",
-    "jwave @ git+https://github.com/ucl-bug/jwave.git",
+    # Fork pinned for two Phase 5 patches stacked on upstream:
+    #   1. configurable-alpha-power — adds Medium.alpha_power so the
+    #      frequency-domain wavevector op can use tissue-realistic
+    #      y ≈ 0.9–1.5 (upstream hardcodes y=2, classical Stokes).
+    #   2. time-domain-absorption — adds power-law absorption to the
+    #      FourierSeries simulate_wave_propagation symplectic step
+    #      (closes brain-fwi tests/test_attenuation_effect.py XFAIL).
+    # See docs/design/phase5_treeby_cox_absorption.md.
+    # Drop the @branch pin once both patches land upstream.
+    "jwave @ git+https://github.com/m9h/jwave.git@feature/time-domain-absorption",
     "jaxdf @ git+https://github.com/ucl-bug/jaxdf.git",
     "equinox>=0.11.0",
     "optax>=0.2.0",

@@ -47,6 +47,7 @@ def build_medium(
     density: Union[float, jnp.ndarray],
     pml_size: int = 20,
     attenuation: Union[float, jnp.ndarray, None] = None,
+    alpha_power: float = 1.5,
 ):
     """Create a j-Wave medium from acoustic property arrays.
 
@@ -55,7 +56,13 @@ def build_medium(
         sound_speed: Scalar or array matching domain.N. Units: m/s.
         density: Scalar or array. Units: kg/m^3.
         pml_size: PML absorbing boundary thickness in grid points.
-        attenuation: Scalar or array. Units: dB/cm/MHz. None = lossless.
+        attenuation: Scalar or array. Units: dB/cm/MHz^alpha_power.
+            None = lossless.
+        alpha_power: Power-law exponent ``y`` for absorption,
+            ``α(ω) ∝ ω^y``. Cortical bone ≈ 1.5; soft tissue ≈ 1.1.
+            j-Wave's Stokes default is 2.0, but that's singular for the
+            time-domain Treeby-Cox absorber (1/sin(πy/2)) so we default
+            to 1.5 — appropriate for skull-imaging FWI.
 
     Returns:
         jwave.geometry.Medium
@@ -76,9 +83,14 @@ def build_medium(
         sound_speed=to_field(sound_speed),
         density=to_field(density),
         pml_size=pml_size,
+        alpha_power=alpha_power,
     )
     if attenuation is not None:
         kwargs["attenuation"] = to_field(attenuation)
+    else:
+        # Explicit zero so the time-domain absorber treats lossless as
+        # "skip" rather than picking up Medium's default scalar α=1.0.
+        kwargs["attenuation"] = 0.0
 
     return Medium(**kwargs)
 
