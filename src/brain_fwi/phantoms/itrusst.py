@@ -40,31 +40,34 @@ import numpy as np
 
 # ITRUSST BM3 acoustic property values (Aubry 2022, Table III).
 #
-# Units: (c [m/s], rho [kg/m^3], alpha [dB/cm/MHz])
-_WATER = (1500.0, 1000.0, 0.0)
-_CORTICAL = (2800.0, 1850.0, 4.0)
-_TRABECULAR = (2300.0, 1700.0, 8.0)
-_BRAIN = (1560.0, 1040.0, 0.6)
+# Units: (c [m/s], rho [kg/m^3], alpha [dB/cm/MHz], y_exponent)
+_WATER = (1500.0, 1000.0, 0.0, 1.0)
+_CORTICAL = (2800.0, 1850.0, 4.0, 1.1)
+_TRABECULAR = (2300.0, 1700.0, 8.0, 1.1)
+_BRAIN = (1560.0, 1040.0, 0.6, 1.0)
 
 
 def _props_volume(
     labels: np.ndarray,
-    label_map: Dict[int, Tuple[float, float, float]],
+    label_map: Dict[int, Tuple[float, float, float, float]],
 ) -> Dict[str, jnp.ndarray]:
-    """Map a label volume through an explicit (c, rho, alpha) table."""
+    """Map a label volume through an explicit (c, rho, alpha, y) table."""
     n_max = max(label_map.keys()) + 1
     c_lookup = np.zeros(n_max, dtype=np.float32)
     rho_lookup = np.zeros(n_max, dtype=np.float32)
     alpha_lookup = np.zeros(n_max, dtype=np.float32)
-    for lab, (c, rho, alpha) in label_map.items():
+    y_lookup = np.zeros(n_max, dtype=np.float32)
+    for lab, (c, rho, alpha, y) in label_map.items():
         c_lookup[lab] = c
         rho_lookup[lab] = rho
         alpha_lookup[lab] = alpha
+        y_lookup[lab] = y
     safe = np.clip(labels, 0, n_max - 1).astype(np.int32)
     return {
         "sound_speed": jnp.asarray(c_lookup[safe]),
         "density": jnp.asarray(rho_lookup[safe]),
         "attenuation": jnp.asarray(alpha_lookup[safe]),
+        "y_exponent": jnp.asarray(y_lookup[safe]),
         "labels": jnp.asarray(labels.astype(np.int32)),
     }
 
@@ -199,4 +202,52 @@ def make_bm4_curved_three_layer_plate(
     return _props_volume(
         labels,
         {0: _WATER, 1: _CORTICAL, 2: _TRABECULAR},
+    )
+
+def make_bm3_head_layers(
+    grid_shape: Tuple[int, int, int],
+    dx: float,
+    plate_normal_axis: int = 2,
+) -> Dict[str, jnp.ndarray]:
+    """ITRUSST BM3 variant: brain | three-layer skull | water.
+
+    Reproduces the sandwich structure but transitions from brain tissue
+    on the 'inside' to water on the 'outside'. Useful for testing
+    transmission through a realistic skull section into parenchyma.
+
+    Args:
+        grid_shape: (nx, ny, nz).
+        dx: Grid spacing (m).
+        plate_normal_axis: Which axis is normal to the layers (0/1/2).
+    """
+    labels = np.zeros(grid_shape, dtype=np.int32)
+    # layers thicknesses in voxels
+    # 0=water, 1=cortical, 2=trabecular, 3=brain
+    
+    brain_vox = grid_shape[plate_normal_axis] // 2
+    inner_vox = int(round(0.002 / dx))
+    diploe_vox = int(round(0.003 / dx))
+    outer_vox = int(round(0.002 / dx))
+    
+    # Fill brain
+    slicer = [slice(None)] * 3
+    slicer[plate_normal_axis] = slice(0, brain_vox)
+    labels[tuple(slicer)] = 3
+    
+    # Fill skull (inner -> diploe -> outer)
+    start = brain_vox
+    def _set(s, n, lab):
+        sl = [slice(None)] * 3
+        sl[plate_normal_axis] = slice(s, s + n)
+        labels[tuple(sl)] = lab
+        
+    _set(start, inner_vox, 1)
+    _set(start + inner_vox, diploe_vox, 2)
+    _set(start + inner_vox + diploe_vox, outer_vox, 1)
+    
+    # Rest is 0 (water) by default
+    
+    return _props_volume(
+        labels,
+        {0: _WATER, 1: _CORTICAL, 2: _TRABECULAR, 3: _BRAIN}
     )

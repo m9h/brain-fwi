@@ -16,6 +16,13 @@
 # Override via env:
 #   sbatch --export=ALL,PHANTOM=synthetic,GRID=64,AUG=20 slurm_gen_phase0.sh
 #   sbatch --export=ALL,GRID=128,AUG=200,ELEM=256       slurm_gen_phase0.sh
+#
+# Nightly resumable run (handoff doc workflow). Manifest commits per
+# sample, so killing the job mid-run loses at most one in-flight sample.
+# Re-submit nightly with the same AUG target to continue:
+#   sbatch --time=14:00:00 \
+#     --export=ALL,AUG=1024,SIREN_HIDDEN=64,SIREN_LAYERS=3,MEM_FRACTION=0.6 \
+#     slurm_gen_phase0.sh
 
 set -euo pipefail
 cd ~/dev/brain-fwi
@@ -36,6 +43,9 @@ SUBJECTS=${SUBJECTS:-1}
 FREQ=${FREQ:-500000}
 PRETRAIN=${PRETRAIN:-400}
 VERSION=${VERSION:-phase0_v1}
+SIREN_HIDDEN=${SIREN_HIDDEN:-128}
+SIREN_LAYERS=${SIREN_LAYERS:-3}
+MEM_FRACTION=${MEM_FRACTION:-0.8}
 
 if [ "$GRID" -ge 192 ]; then
     DX=0.001
@@ -49,11 +59,14 @@ echo "  Phantom:  ${PHANTOM}"
 echo "  Grid:     ${GRID}^3, dx=${DX}"
 echo "  Subjects: ${SUBJECTS} x ${AUG} augmentations = $((SUBJECTS * AUG)) samples"
 echo "  Elements: ${ELEM}, Freq: ${FREQ} Hz"
+echo "  SIREN:    hidden=${SIREN_HIDDEN}, layers=${SIREN_LAYERS}"
+echo "  Memory:   XLA_PYTHON_CLIENT_MEM_FRACTION=${MEM_FRACTION}"
 echo "  Output:   ${OUTDIR}"
 echo ""
 
 export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_MEM_FRACTION="$MEM_FRACTION"
 
 .venv/bin/python -u scripts/gen_phase0.py \
     --out "$OUTDIR" \
@@ -64,6 +77,8 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
     --n-subjects "$SUBJECTS" \
     --n-augments "$AUG" \
     --freq "$FREQ" \
+    --siren-hidden "$SIREN_HIDDEN" \
+    --siren-layers "$SIREN_LAYERS" \
     --siren-pretrain-steps "$PRETRAIN" \
     --version "$VERSION"
 

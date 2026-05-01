@@ -27,7 +27,7 @@ import optax
 import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from ..simulation.forward import (
     build_domain,
@@ -116,6 +116,15 @@ class FWIConfig:
     siren_pretrain_lr: float = 1e-3
     siren_learning_rate: float = 1e-3  # Adam lr on MLP weights during FWI
     siren_seed: int = 0
+
+    # --- Phase 3 score-prior regulariser (SIREN path only) ---
+    # When ``score_prior_fn`` is provided AND ``score_prior_weight > 0``,
+    # the FWI gradient at each iter is composed with a Phase-3 score
+    # prior: ``effective_grad = ∇L_data − λ · s_φ(θ, t_eps)``. Defaults
+    # leave existing callers unaffected.
+    score_prior_fn: Optional[Any] = None  # (theta_flat, t) -> ℝ^D
+    score_prior_weight: float = 0.0
+    score_prior_t_eps: float = 0.01
 
 
 @dataclass
@@ -712,6 +721,19 @@ def _run_fwi_siren(
                 grads_accum,
             )
             loss_history.append(loss_val)
+
+            # Phase 3 score-prior regulariser. With ``score_prior_fn=None``
+            # or ``weight=0`` this is a no-op and the original FWI gradient
+            # pipeline runs unchanged.
+            if config.score_prior_fn is not None and config.score_prior_weight > 0:
+                from brain_fwi.inference.diffusion import (
+                    compose_siren_grad_with_score_prior,
+                )
+                grads = compose_siren_grad_with_score_prior(
+                    grads, field, config.score_prior_fn,
+                    weight=config.score_prior_weight,
+                    t_eps=config.score_prior_t_eps,
+                )
 
             updates, opt_state = optimizer.update(grads, opt_state)
             field = eqx.apply_updates(field, updates)

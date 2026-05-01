@@ -43,14 +43,15 @@ C_MIN, C_MAX = 1400.0, 3200.0
 # so the sweep walks from "definitely too small" up to "current default".
 CONFIGS = [
     # hidden, n_hidden, omega_0
-    (16, 1, 30.0),
-    (16, 2, 30.0),
-    (32, 1, 30.0),
     (32, 2, 30.0),
     (32, 3, 30.0),
+    (32, 4, 30.0),
     (64, 2, 30.0),
     (64, 3, 30.0),
-    (128, 3, 30.0),  # current default
+    (64, 4, 30.0),
+    (128, 2, 30.0),
+    (128, 3, 30.0),
+    (128, 4, 30.0),
 ]
 
 
@@ -66,32 +67,20 @@ class Result:
     passes_gate: bool
 
 
-def _build_coupled_phantom(grid_shape=(24, 24, 24), dx=0.004):
-    nx, ny, nz = grid_shape
-    cx, cy, cz = nx // 2, ny // 2, nz // 2
-    head_a = min(0.095 / dx, cx - 3)
-    head_b = min(0.075 / dx, cy - 3)
-    head_c = min(0.090 / dx, cz - 3)
-    x, y, z = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
-    r = np.sqrt(((x - cx) / head_a) ** 2
-                + ((y - cy) / head_b) ** 2
-                + ((z - cz) / head_c) ** 2)
-    labels = np.zeros(grid_shape, dtype=np.int32)
-    labels = np.where(r <= 1.0, 6, labels)
-    labels = np.where(r <= 0.93, 7, labels)
-    labels = np.where(r <= 0.85, 1, labels)
-    labels = np.where(r <= 0.80, 2, labels)
-    labels = np.where(r <= 0.55, 3, labels)
-    props = jittered_properties(jnp.asarray(labels), jr.PRNGKey(0), intensity=1.0)
-    c = jnp.where(jnp.asarray(labels) == 0, 1500.0, props["sound_speed"])
-    return jnp.asarray(labels), c
+def _build_mida_phantom(grid_shape=(32, 32, 32), dx=0.003):
+    from brain_fwi.phantoms.mida import make_mida_phantom
+    mida_path = "/data/datasets/MIDAv1-0/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii"
+    labels, c, rho, alpha = make_mida_phantom(
+        mida_path, grid_shape, dx, add_lesion=False, crop_cube=True,
+    )
+    return labels, c
 
 
 def sweep(configs=CONFIGS, pretrain_steps: int = 400) -> List[Result]:
-    labels, c_coupled = _build_coupled_phantom()
+    labels, c_target = _build_mida_phantom()
     results: List[Result] = []
 
-    print(f"Phantom: {tuple(c_coupled.shape)}, coupled with water where label==0")
+    print(f"Phantom: MIDA {tuple(c_target.shape)}, dx=3.0mm")
     print(f"Fit target: p95 rel-err < 2.0%")
     print(f"Pretrain steps per config: {pretrain_steps}")
     print()
@@ -102,7 +91,7 @@ def sweep(configs=CONFIGS, pretrain_steps: int = 400) -> List[Result]:
     for hidden, n_hidden, omega_0 in configs:
         t0 = time.time()
         field = init_siren_from_velocity(
-            c_coupled,
+            c_target,
             c_min=C_MIN, c_max=C_MAX,
             hidden_dim=hidden, n_hidden=n_hidden, omega_0=omega_0,
             pretrain_steps=pretrain_steps, learning_rate=1e-3,
@@ -111,7 +100,7 @@ def sweep(configs=CONFIGS, pretrain_steps: int = 400) -> List[Result]:
         fit_time = time.time() - t0
 
         v = field.to_velocity(C_MIN, C_MAX)
-        rel_err = jnp.abs(v - c_coupled) / c_coupled
+        rel_err = jnp.abs(v - c_target) / c_target
         p95 = float(jnp.percentile(rel_err, 95))
         mx = float(jnp.max(rel_err))
 
