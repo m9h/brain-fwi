@@ -1,0 +1,25 @@
+{
+  "device": "[CpuDevice(id=0)]",
+  "backend": "cpu",
+  "n_params": 13038177,
+  "batch_size": 4,
+  "steps_measured": 100,
+  "warmup": 5,
+  "jit": {
+    "train_step_first_s": 0.965,
+    "forward_first_s": 0.258
+  },
+  "training": {
+    "wall_s": 15.52,
+    "ms_per_step": 155.2,
+    "samples_per_s": 25.8,
+    "final_loss": 0.01392
+  },
+  "inference": {
+    "wall_s": 2.67,
+    "ms_per_step": 26.7,
+    "samples_per_s": 149.9
+  },
+  "validation_mae_m_s": 453.2,
+  "peak_rss_mb": 1643.0
+}
