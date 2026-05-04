@@ -162,8 +162,37 @@ def generate_range(
     if phantom == "mida":
         args += ["--mida-path", _ensure_mida_path()]
 
+    # Run gen_phase0 as a non-blocking subprocess so we can periodically
+    # commit the Modal volume. Without this, a mid-run failure (preemption,
+    # OOM, network blip, container kill) loses every sample produced
+    # since the rank started — the manifest + shards live in container-
+    # local storage until commit() runs.
+    import threading
     t0 = time.time()
-    subprocess.run(args, check=True, cwd="/opt/brain-fwi")
+    proc = subprocess.Popen(args, cwd="/opt/brain-fwi")
+
+    stop_event = threading.Event()
+    def _commit_loop():
+        while not stop_event.wait(timeout=300):  # every 5 min
+            try:
+                print(f"[rank {rank}] periodic volume commit...", flush=True)
+                work_vol.commit()
+            except Exception as e:
+                print(f"[rank {rank}] periodic commit failed: {e}", flush=True)
+    t = threading.Thread(target=_commit_loop, daemon=True)
+    t.start()
+
+    ret = proc.wait()
+    stop_event.set()
+    t.join(timeout=10)
+    if ret != 0:
+        # Final commit even on failure so partial work is durable.
+        try:
+            work_vol.commit()
+        except Exception:
+            pass
+        raise RuntimeError(f"gen_phase0.py exited with code {ret}")
+
     wallclock = time.time() - t0
     work_vol.commit()
 
