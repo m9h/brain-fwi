@@ -56,7 +56,7 @@ SIREN_LAYERS = 3
 SIREN_PRETRAIN_STEPS = 400
 DATASET_VERSION = "phase0_v1"
 
-GIT_BRANCH = "main"
+GIT_BRANCH = "feature/parallel-modal-phase0"
 CACHE_BUST = "2026-05-04-phase0-modal-parallel-v1"
 
 MIDA_VOL_NAME = "mida-data"
