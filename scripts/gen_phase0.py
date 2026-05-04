@@ -301,7 +301,24 @@ def main() -> None:
     parser.add_argument("--base-seed", type=int, default=0)
     parser.add_argument("--shard-size", type=int, default=1000)
     parser.add_argument("--version", type=str, default="phase0_v1")
+    # Range slicing for parallel generation across N workers.
+    # Each worker processes [aug_start, aug_end) of the global aug range.
+    # Sample IDs and seeds use the global aug index, so independent
+    # workers never produce overlapping samples and the resulting
+    # part-directories merge losslessly.
+    parser.add_argument("--aug-start", type=int, default=0,
+                        help="First aug index this worker handles (inclusive)")
+    parser.add_argument("--aug-end", type=int, default=None,
+                        help="Last aug index this worker handles (exclusive). "
+                             "Defaults to --n-augments.")
     args = parser.parse_args()
+    if args.aug_end is None:
+        args.aug_end = args.n_augments
+    if not (0 <= args.aug_start < args.aug_end <= args.n_augments):
+        raise SystemExit(
+            f"invalid aug range [{args.aug_start}, {args.aug_end}) "
+            f"for n_augments={args.n_augments}"
+        )
 
     n = args.grid_size
     grid_shape = (n, n, n)
@@ -340,7 +357,7 @@ def main() -> None:
     skipped = 0
 
     for subj in range(args.n_subjects):
-        for aug in range(args.n_augments):
+        for aug in range(args.aug_start, args.aug_end):
             sample_id = f"{args.phantom}_{subj:03d}_{aug:03d}"
             if writer.is_complete(sample_id):
                 skipped += 1
