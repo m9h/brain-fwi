@@ -211,6 +211,7 @@ def main(
     siren_hidden: int = SIREN_HIDDEN,
     siren_layers: int = SIREN_LAYERS,
     version: str = DATASET_VERSION,
+    existing_parts: str = "",           # comma-sep names already on the volume
 ):
     if aug_end < 0:
         aug_end = n_augments
@@ -264,6 +265,11 @@ def main(
 
     base_dir = f"/work/output/{version}_{phantom}_{grid_size}"
     part_dirs = [r["part_dir"] for r in results]
+    if existing_parts:
+        for name in existing_parts.split(","):
+            name = name.strip()
+            if name:
+                part_dirs.append(f"{base_dir}/{name}")
     merge_result = merge_parts.remote(
         part_dirs=part_dirs,
         output_dir=f"{base_dir}/merged",
