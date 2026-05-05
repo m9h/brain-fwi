@@ -54,10 +54,10 @@ FREQ_HZ = 5.0e5
 SIREN_HIDDEN = 128
 SIREN_LAYERS = 3
 SIREN_PRETRAIN_STEPS = 400
-DATASET_VERSION = "phase0_v1"
+DATASET_VERSION = "phase0_v2"
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-04-phase0-modal-parallel-v2-commit-loop"
+CACHE_BUST = "2026-05-04-phase0-mida-property-fix"
 
 MIDA_VOL_NAME = "mida-data"
 WORK_VOL_NAME = "brain-fwi-phase0"

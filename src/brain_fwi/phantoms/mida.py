@@ -324,6 +324,100 @@ def map_mida_labels_to_acoustic(
 
 
 # ---------------------------------------------------------------------------
+# Per-tissue-group fractional jitter for MIDA augmentation
+# ---------------------------------------------------------------------------
+# Format: group_name -> (sigma_c, sigma_rho, sigma_alpha) as fractional std.
+# Calibrated against the BrainWeb-style sigmas in
+# brain_fwi.phantoms.augment._DEFAULT_FRAC_STD: bone classes get the
+# largest variability (Aubry 2022, Table III), soft tissues mid-range,
+# water/air pinned to nominal.
+
+MIDA_GROUP_FRAC_STD: Dict[str, Tuple[float, float, float]] = {
+    "water":           (0.00, 0.00, 0.00),
+    "air":             (0.00, 0.00, 0.00),
+    "skin":            (0.03, 0.03, 0.25),
+    "fat":             (0.04, 0.03, 0.30),
+    "muscle":          (0.03, 0.03, 0.25),
+    "cortical_bone":   (0.07, 0.07, 0.30),
+    "trabecular_bone": (0.10, 0.10, 0.40),
+    "cartilage":       (0.04, 0.03, 0.30),
+    "csf":             (0.01, 0.01, 0.20),
+    "grey_matter":     (0.02, 0.02, 0.20),
+    "white_matter":    (0.02, 0.02, 0.20),
+    "blood_vessels":   (0.02, 0.02, 0.20),
+    "dura":            (0.03, 0.03, 0.25),
+    "eye":             (0.02, 0.02, 0.20),
+    "nerve":           (0.02, 0.02, 0.20),
+    "gland":           (0.03, 0.03, 0.25),
+    "mucosa":          (0.03, 0.03, 0.25),
+    "connective":      (0.04, 0.03, 0.30),
+}
+
+
+def _build_mida_label_tables() -> Tuple[
+    Dict[int, Tuple[float, float, float]],
+    Dict[int, Tuple[float, float, float]],
+]:
+    """Return (base_props, frac_std) keyed by MIDA label, derived from groups.
+
+    Labels not in :data:`MIDA_LABEL_TO_GROUP` (and label 0, which has
+    no MIDA meaning but appears at the boundary of warped volumes)
+    fall through to the ``"water"`` group so unmapped voxels behave
+    as coupling medium rather than silently quantising to whichever
+    tissue happens to occupy the nearest table slot.
+    """
+    base: Dict[int, Tuple[float, float, float]] = {}
+    sigma: Dict[int, Tuple[float, float, float]] = {}
+    water_props = MIDA_ACOUSTIC_PROPERTIES["water"]
+    water_sigma = MIDA_GROUP_FRAC_STD["water"]
+    base[0] = (water_props["sound_speed"], water_props["density"], water_props["attenuation"])
+    sigma[0] = water_sigma
+    for label, group in MIDA_LABEL_TO_GROUP.items():
+        props = MIDA_ACOUSTIC_PROPERTIES[group]
+        base[label] = (props["sound_speed"], props["density"], props["attenuation"])
+        sigma[label] = MIDA_GROUP_FRAC_STD[group]
+    return base, sigma
+
+
+_MIDA_BASE_PROPS_BY_LABEL, _MIDA_FRAC_STD_BY_LABEL = _build_mida_label_tables()
+
+
+def mida_jittered_properties(
+    labels,
+    key,
+    intensity: float = 1.0,
+):
+    """MIDA-aware wrapper around :func:`augment.jittered_properties`.
+
+    Equivalent to ``jittered_properties`` but with the base property
+    table and per-tissue jitter sigmas derived from MIDA's 116-class
+    label scheme (see :data:`MIDA_LABEL_TO_GROUP` and
+    :data:`MIDA_GROUP_FRAC_STD`). Use this for any phantom whose labels
+    follow MIDA conventions; the BrainWeb-targeted default in
+    ``jittered_properties`` would silently clip labels >= 12 to
+    trabecular bone.
+
+    Args:
+        labels: ``(Z, Y, X)`` integer MIDA tissue labels (0..116).
+        key: JAX PRNG key.
+        intensity: Scalar scaling of all sigmas (0 = no jitter).
+
+    Returns:
+        Same dict shape as :func:`jittered_properties`.
+    """
+    from brain_fwi.phantoms.augment import jittered_properties
+
+    return jittered_properties(
+        labels,
+        key,
+        intensity=intensity,
+        fractional_std=_MIDA_FRAC_STD_BY_LABEL,
+        base_properties=_MIDA_BASE_PROPS_BY_LABEL,
+        n_labels=_MAX_MIDA_LABEL + 1,
+    )
+
+
+# ---------------------------------------------------------------------------
 # MIDA file loading
 # ---------------------------------------------------------------------------
 

@@ -74,7 +74,7 @@ from brain_fwi.phantoms.augment import (
     jittered_properties,
     random_deformation_warp,
 )
-from brain_fwi.phantoms.mida import make_mida_phantom
+from brain_fwi.phantoms.mida import make_mida_phantom, mida_jittered_properties
 from brain_fwi.phantoms.properties import map_labels_to_all
 from brain_fwi.phantoms.synthetic import make_three_layer_head
 from brain_fwi.simulation.forward import (
@@ -184,16 +184,31 @@ def generate_sample(
     )
 
     jax_key, jkey_prop = jr.split(jax_key)
-    props = jittered_properties(
-        jnp.asarray(warped_labels), jkey_prop, intensity=jitter_intensity,
-    )
-    # Replace any air labels (label 0 in the synthetic phantom; MIDA labels
-    # 26-31 / 85 / 97 slip through this mask because they map via the "air"
-    # group into c=343 only if not caught here) with water coupling for
-    # USCT acquisition.
-    coupling_mask = jnp.asarray(warped_labels) == 0
-    sound_speed = jnp.where(coupling_mask, 1500.0, props["sound_speed"])
-    density = jnp.where(coupling_mask, 1000.0, props["density"])
+    if phantom == "mida":
+        # MIDA carries 116 distinct labels; the BrainWeb-keyed default
+        # in jittered_properties would clip everything >= 12 to label
+        # 11 (trabecular bone, ~2300 m/s), corrupting the entire c
+        # field. Use the MIDA-aware path which derives base values
+        # from MIDA_LABEL_TO_GROUP + MIDA_ACOUSTIC_PROPERTIES, so
+        # label 50 (background) → water, label 33 (cortical_bone) →
+        # 2800 m/s, etc. The air-cavity labels (26-31, 85, 97) keep
+        # c=343 m/s through the "air" group; USCT-coupling boundaries
+        # outside the head get water from the "water" group on
+        # label 50 directly, no extra masking needed.
+        props = mida_jittered_properties(
+            jnp.asarray(warped_labels), jkey_prop, intensity=jitter_intensity,
+        )
+    else:
+        props = jittered_properties(
+            jnp.asarray(warped_labels), jkey_prop, intensity=jitter_intensity,
+        )
+        # Synthetic phantom uses BrainWeb's label 0 for air/background;
+        # override to water-coupling for USCT acquisition.
+        coupling_mask = jnp.asarray(warped_labels) == 0
+        props["sound_speed"] = jnp.where(coupling_mask, 1500.0, props["sound_speed"])
+        props["density"] = jnp.where(coupling_mask, 1000.0, props["density"])
+    sound_speed = props["sound_speed"]
+    density = props["density"]
 
     positions, pos_grid, src_list = _build_helmet(n_elements, grid_shape, dx)
     sensor_grid = pos_grid
