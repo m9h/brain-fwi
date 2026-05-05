@@ -111,6 +111,7 @@ def _ensure_mida_path() -> str:
     timeout=24 * 60 * 60,
     memory=32 * 1024,
     volumes={"/mida": mida_vol, "/work": work_vol},
+    retries=2,
 )
 def generate_range(
     rank: int,
