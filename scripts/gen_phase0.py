@@ -210,6 +210,23 @@ def generate_sample(
     sound_speed = props["sound_speed"]
     density = props["density"]
 
+    # Sanity-check c before paying ~4 min of forward sim per sample.
+    # The v1b run silently misrendered ~87% of voxels as trabecular bone
+    # (label-clip bug in jittered_properties); only a post-hoc histogram
+    # caught it after 1024 wasted samples. Empirical healthy MIDA-96^3
+    # across 8 seeds: water_frac in [34%, 45%], c_max in [3075, 3361];
+    # the v1b-bug pathway produced water_frac~8% and c_max~2600. The
+    # 20% / 2700 thresholds below give a clean separation either way.
+    water_frac = float(((sound_speed > 1490.0) & (sound_speed < 1510.0)).mean())
+    c_max = float(sound_speed.max())
+    if water_frac < 0.20 or c_max < 2700.0:
+        raise ValueError(
+            f"[{sample_id}] sound-speed field looks corrupted: "
+            f"water_frac={water_frac:.1%} (expect >=20%), "
+            f"c_max={c_max:.0f} m/s (expect >=2700). "
+            f"Likely a tissue-table or label-mapping bug."
+        )
+
     positions, pos_grid, src_list = _build_helmet(n_elements, grid_shape, dx)
     sensor_grid = pos_grid
 
