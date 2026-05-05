@@ -57,7 +57,7 @@ SIREN_PRETRAIN_STEPS = 400
 DATASET_VERSION = "phase0_v2"
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-05-phase0-c-field-assertion"
+CACHE_BUST = "2026-05-05-phase0-warp-noop-fix"
 
 MIDA_VOL_NAME = "mida-data"
 WORK_VOL_NAME = "brain-fwi-phase0"

@@ -177,11 +177,25 @@ def generate_sample(
     jax_key = jr.PRNGKey(subject_seed)
 
     base_labels = _build_phantom_labels(phantom, grid_shape, dx, mida_path)
+    # Smoothness rule used to be min(grid)/6 (=16 voxels at 96^3), which
+    # combined with the 2-voxel peak displacement made the warp a NN-
+    # rounding no-op: mean |disp| ~0.08 voxels, only ~1% of voxels above
+    # the 0.5-voxel rounding threshold, and zero label-boundary crossings.
+    # Empirically the warp produced byte-identical output across seeds.
+    # min(grid)/16 (=6 voxels at 96^3) keeps the deformation smooth on
+    # an anatomical scale (~12 mm at dx=2 mm) while letting the peak
+    # actually move voxels. Floor of 4 keeps it sane on tiny test grids.
     warped_labels = random_deformation_warp(
         base_labels, np_rng,
         max_displacement_voxels=deformation_voxels,
-        smoothness_voxels=max(8.0, min(grid_shape) / 6.0),
+        smoothness_voxels=max(4.0, min(grid_shape) / 16.0),
     )
+    if (warped_labels != base_labels).sum() == 0:
+        raise ValueError(
+            f"[{sample_id}] deformation warp produced zero label changes "
+            f"(peak={deformation_voxels}, sigma={max(4.0, min(grid_shape)/16.0):.1f}); "
+            f"augmentation pipeline is a no-op. Bump --deformation-voxels."
+        )
 
     jax_key, jkey_prop = jr.split(jax_key)
     if phantom == "mida":
@@ -324,7 +338,7 @@ def main() -> None:
     parser.add_argument("--n-subjects", type=int, default=1)
     parser.add_argument("--n-augments", type=int, default=4)
     parser.add_argument("--n-elements", type=int, default=64)
-    parser.add_argument("--deformation-voxels", type=float, default=2.0)
+    parser.add_argument("--deformation-voxels", type=float, default=6.0)
     parser.add_argument("--jitter-intensity", type=float, default=1.0)
     parser.add_argument("--siren-hidden", type=int, default=128)
     parser.add_argument("--siren-layers", type=int, default=3)
