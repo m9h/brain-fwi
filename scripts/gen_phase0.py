@@ -74,7 +74,11 @@ from brain_fwi.phantoms.augment import (
     jittered_properties,
     random_deformation_warp,
 )
-from brain_fwi.phantoms.mida import make_mida_phantom, mida_jittered_properties
+from brain_fwi.phantoms.mida import (
+    MIDA_INTERNAL_AIR_LABELS,
+    make_mida_phantom,
+    mida_jittered_properties,
+)
 from brain_fwi.phantoms.properties import map_labels_to_all
 from brain_fwi.phantoms.synthetic import make_three_layer_head
 from brain_fwi.simulation.forward import (
@@ -114,7 +118,23 @@ def _build_phantom_labels(
         labels, _c, _rho, _alpha = make_mida_phantom(
             mida_path, grid_shape, dx, add_lesion=False, crop_cube=True,
         )
-        return np.asarray(labels).astype(np.int32)
+        labels = np.asarray(labels).astype(np.int32)
+        # Water-fill internal air cavities (sinuses, ear canal, oral cavity,
+        # etc. — labels 26-31, 85, 97). Otherwise the c=343 / rho=1.225 air
+        # voxels create a 4x sound-speed and 800x density discontinuity at
+        # the air-tissue boundary that destabilises the pseudospectral
+        # solver: the field exponentially blew up by ~6 orders of magnitude
+        # every 5 timesteps starting at t~30, NaN-cascading across the
+        # whole record by t=50 and leaving 99% of observed_data unusable.
+        # Anatomical air is correct but FWI-unfriendly; coupling-fluid /
+        # water-filled cavities are the standard FWI/USCT abstraction
+        # (Aubry 2022, Guasch 2020).
+        labels = np.where(
+            np.isin(labels, list(MIDA_INTERNAL_AIR_LABELS)),
+            50,  # MIDA "Background" label maps to water in mida_jittered_properties
+            labels,
+        )
+        return labels
     raise ValueError(f"Unknown phantom {phantom!r}; expected synthetic or mida")
 
 

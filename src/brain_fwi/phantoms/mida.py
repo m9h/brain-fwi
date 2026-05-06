@@ -599,6 +599,10 @@ _MIDA_BRAIN_PARENCHYMA_LABELS = frozenset({
 # mastoid, etc). Useful when you want to water-fill them for solver stability.
 _MIDA_INTERNAL_AIR_LABELS = frozenset({26, 27, 28, 29, 30, 31, 85, 97})
 
+# Public re-export so callers (gen_phase0.py) can water-fill air cavities at
+# the label level before any augmentation pipeline re-derives c/rho.
+MIDA_INTERNAL_AIR_LABELS = _MIDA_INTERNAL_AIR_LABELS
+
 
 def make_mida_phantom(
     path: Path,
