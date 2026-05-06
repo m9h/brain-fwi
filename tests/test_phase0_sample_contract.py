@@ -35,6 +35,8 @@ import pytest
 
 
 _SHARD_CANDIDATES = (
+    Path("/tmp/phase0_v2a_prod/merged"),
+    Path("/tmp/phase0_smoke4/merged"),
     Path("/tmp/phase0_smoke3/merged"),
     Path("/tmp/phase0_smoke/merged"),
     Path("/tmp/phase0_unit_smoke"),

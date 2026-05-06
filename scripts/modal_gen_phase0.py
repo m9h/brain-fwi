@@ -308,3 +308,37 @@ def main(
     print(f"\nFinal dataset: {merge_result['n_samples']} samples")
     print(f"Pull back with:")
     print(f"  modal volume get {WORK_VOL_NAME} {merge_result['output_dir']} ./")
+
+
+@app.local_entrypoint()
+def merge_only(
+    phantom: str = PHANTOM,
+    grid_size: int = GRID_SIZE,
+    n_ranks: int = 8,
+    version: str = DATASET_VERSION,
+    existing_parts: str = "",
+):
+    """Run only the merge step — recover from a disconnected production run.
+
+    When the local CLI loses contact during a `--detach` run the spawned
+    ranks finish on their own (Modal keeps the app alive) but the
+    `merge_parts.remote()` call inside `main` never fires. This entrypoint
+    re-attaches and merges whatever per-rank dirs exist on the volume.
+    """
+    base_dir = f"/work/output/{version}_{phantom}_{grid_size}"
+    part_dirs = [f"{base_dir}/part_{rank:02d}" for rank in range(n_ranks)]
+    if existing_parts:
+        for name in existing_parts.split(","):
+            name = name.strip()
+            if name:
+                part_dirs.append(f"{base_dir}/{name}")
+    print(f"Merging {len(part_dirs)} part dirs into {base_dir}/merged")
+    for d in part_dirs:
+        print(f"  {d}")
+    merge_result = merge_parts.remote(
+        part_dirs=part_dirs,
+        output_dir=f"{base_dir}/merged",
+    )
+    print(f"\nMerged dataset: {merge_result['n_samples']} samples")
+    print(f"Pull back with:")
+    print(f"  modal volume get {WORK_VOL_NAME} {merge_result['output_dir']} ./")
