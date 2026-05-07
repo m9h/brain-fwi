@@ -57,6 +57,19 @@ def main() -> int:
     )
     ap.add_argument("--held-out-fraction", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--skip-validation", action="store_true",
+        help="Skip the §7.2/§7.3 validation gates after training. Use for "
+             "smoke runs where the gradient-accuracy gate's full j-Wave "
+             "forward sims would dominate cost or OOM the GPU.",
+    )
+    ap.add_argument(
+        "--n-grad-samples", type=int, default=20,
+        help="Number of held-out samples used for the §7.3 gradient-"
+             "accuracy gate. The gate runs a full j-Wave forward per "
+             "sample, so ~20 is the practical ceiling on H100-80GB. "
+             "Lower for memory-constrained runs.",
+    )
     args = ap.parse_args()
 
     # --- Setup ----------------------------------------------------------
@@ -142,11 +155,40 @@ def main() -> int:
     train_time = time.time() - t0
     print(f"\n  training time: {train_time/60:.1f} min")
 
+    # --- Persist model + training metrics BEFORE validation -----------
+    # Validation gates run a full j-Wave forward sim per sample; on a
+    # tiny smoke run those gates can OOM the GPU even when training
+    # finished cleanly. Save first so a doomed validation pass doesn't
+    # lose the expensive training output.
+    out_dir = args.out if args.out.is_dir() else args.out.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model_path = args.out.with_suffix(".eqx") if not args.out.is_dir() else args.out / "model.eqx"
+    json_path = args.out.with_suffix(".json") if not args.out.is_dir() else args.out / "metrics.json"
+    eqx.tree_serialise_leaves(model_path, trained)
+    report: dict = {
+        "config": vars(args),
+        "metrics": None,
+        "grad_metrics": None,
+        "loss_history": [float(l) for l in losses],
+        "train_time_s": train_time,
+        "validation_skipped": False,
+        "validation_error": None,
+    }
+    json_path.write_text(json.dumps(report, indent=2, default=str))
+    print(f"\n  model written:   {model_path}")
+    print(f"  metrics written: {json_path} (training-only, validation pending)")
+
     # --- Validate -------------------------------------------------------
+    if args.skip_validation:
+        print("\n  --skip-validation set; bypassing §7.2/§7.3 gates")
+        report["validation_skipped"] = True
+        json_path.write_text(json.dumps(report, indent=2, default=str))
+        return 0
+
     print("\n" + "=" * 70)
     print("  Validation (§7.2 Trace-fidelity Gate)")
     print("=" * 70)
-    
+
     held_out_samples = [reader[sid] for sid in held_out_ids]
     from brain_fwi.surrogate.train import _extract_source_positions
     src_pos = _extract_source_positions(first)
@@ -161,8 +203,8 @@ def main() -> int:
     print("\n" + "=" * 70)
     print("  Validation (§7.3 Gradient-accuracy Gate)")
     print("=" * 70)
-    
-    n_grad = min(len(held_out_ids), 20)
+
+    n_grad = min(len(held_out_ids), args.n_grad_samples)
     grad_ids = held_out_ids[:n_grad]
     grad_samples = [reader[sid] for sid in grad_ids]
     
@@ -212,26 +254,11 @@ def main() -> int:
     
     print(format_gate_report(trace_metrics, grad_metrics))
 
-    # --- Persist --------------------------------------------------------
-    out_dir = args.out if args.out.is_dir() else args.out.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    
-    model_path = args.out.with_suffix(".eqx") if not args.out.is_dir() else args.out / "model.eqx"
-    json_path = args.out.with_suffix(".json") if not args.out.is_dir() else args.out / "metrics.json"
-
-    eqx.tree_serialise_leaves(model_path, trained)
-    
-    report = {
-        "config": vars(args),
-        "metrics": trace_metrics,
-        "grad_metrics": grad_metrics,
-        "loss_history": [float(l) for l in losses],
-        "train_time_s": train_time,
-    }
+    # --- Update the already-saved metrics with validation results ------
+    report["metrics"] = trace_metrics
+    report["grad_metrics"] = grad_metrics
     json_path.write_text(json.dumps(report, indent=2, default=str))
-    
-    print(f"\n  model written:   {model_path}")
-    print(f"  metrics written: {json_path}")
+    print(f"\n  metrics updated: {json_path}")
 
     return 0
 

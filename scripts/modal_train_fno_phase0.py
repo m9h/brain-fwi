@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-06-fno-v2a-n-timesteps"
+CACHE_BUST = "2026-05-06-fno-skip-validation"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -78,6 +78,8 @@ def _train_body(
     lambda_spec: float,
     held_out_fraction: float,
     n_timesteps: int,
+    skip_validation: bool,
+    n_grad_samples: int,
 ):
     """Body of the training run, identical regardless of which GPU it runs on."""
     import os
@@ -110,6 +112,9 @@ def _train_body(
     ]
     if n_timesteps > 0:
         args += ["--n-timesteps", str(n_timesteps)]
+    if skip_validation:
+        args += ["--skip-validation"]
+    args += ["--n-grad-samples", str(n_grad_samples)]
     print(f"\nLaunching: {' '.join(args)}\n")
 
     t0 = time.time()
@@ -165,6 +170,8 @@ def main(
     lambda_spec: float = 0.3,
     held_out_fraction: float = 0.2,
     n_timesteps: int = 0,           # 0 = infer from first sample
+    skip_validation: bool = False,  # smoke: bypass §7.2/§7.3 gates
+    n_grad_samples: int = 20,       # cap gradient-accuracy sample count
 ):
     print("=" * 64)
     print(f"  FNO surrogate training on Modal {gpu}")
@@ -189,6 +196,8 @@ def main(
         lambda_spec=lambda_spec,
         held_out_fraction=held_out_fraction,
         n_timesteps=n_timesteps,
+        skip_validation=skip_validation,
+        n_grad_samples=n_grad_samples,
     )
     print(f"\nDone in {result['wall_s']/60:.1f} min")
     print(f"Pull results: modal volume get {OUTPUT_VOL} "
