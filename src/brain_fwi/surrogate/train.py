@@ -161,6 +161,8 @@ def train_fno_surrogate(
     c_min: float = 1400.0,
     c_max: float = 3200.0,
     learning_rate: float = 1e-3,
+    lr_schedule: str = "cosine",
+    lr_alpha: float = 0.01,
     lambda_spec: float = 0.3,
     source_positions: Optional[Sequence[Tuple[int, int, int]]] = None,
     held_out_ids: Optional[Sequence[str]] = None,
@@ -177,7 +179,14 @@ def train_fno_surrogate(
         n_steps: number of gradient steps.
         key: PRNG key for sample selection.
         c_min, c_max: velocity-normalisation bounds.
-        learning_rate: Adam LR.
+        learning_rate: peak Adam LR; ``cosine`` decays to
+            ``lr_alpha * learning_rate`` over ``n_steps``.
+        lr_schedule: ``"cosine"`` (default) or ``"constant"``. Cosine
+            stops the late-training divergence we observed in the
+            constant-LR FNO production v2 (loss bottomed at 0.48 on
+            step 193, bounced up to 1.04 by step 1000).
+        lr_alpha: cosine final/initial LR ratio. 0.01 → end at 1e-5
+            when ``learning_rate=1e-3``.
         lambda_spec: spectral-loss weight.
         source_positions: override the auto-extracted helmet. Use when
             the reader does not expose transducer coords (e.g. tests).
@@ -187,7 +196,11 @@ def train_fno_surrogate(
         verbose: print progress.
 
     Returns:
-        ``(trained_model, loss_history)``.
+        ``(best_model, loss_history)``. The first element is the model
+        weights from the lowest-loss step seen, NOT the model at the
+        end of training. With cosine LR this usually coincides with the
+        last step, but with constant LR or a destabilising config the
+        best can be hundreds of steps behind the final.
     """
     train_ids = list(reader.sample_ids)
     if held_out_ids is not None:
@@ -202,7 +215,20 @@ def train_fno_surrogate(
         source_positions = _extract_source_positions(reader[train_ids[0]])
     source_positions = list(source_positions)
 
-    optimizer = optax.adam(learning_rate)
+    if lr_schedule == "cosine":
+        lr = optax.cosine_decay_schedule(
+            init_value=learning_rate,
+            decay_steps=n_steps,
+            alpha=lr_alpha,
+        )
+    elif lr_schedule == "constant":
+        lr = learning_rate
+    else:
+        raise ValueError(
+            f"unknown lr_schedule {lr_schedule!r}; expected 'cosine' or 'constant'"
+        )
+
+    optimizer = optax.adam(lr)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     @eqx.filter_jit
@@ -215,6 +241,8 @@ def train_fno_surrogate(
         return m, opt_state, loss
 
     losses: List[float] = []
+    best_loss = float("inf")
+    best_model = model
     n_train = len(train_ids)
     for s in range(n_steps):
         key, subkey = jr.split(key)
@@ -240,10 +268,20 @@ def train_fno_surrogate(
             d = jnp.concatenate([d, pad], axis=1)
 
         model, opt_state, loss = step(model, opt_state, c_norm, d)
-        losses.append(float(loss))
+        loss_f = float(loss)
+        losses.append(loss_f)
+        if loss_f < best_loss:
+            best_loss = loss_f
+            best_model = model
         if verbose and (s + 1) % log_every == 0:
             recent = np.mean(losses[-log_every:])
             print(f"  FNO-train step {s+1}/{n_steps}: "
-                  f"loss={recent:.4f} (avg over last {log_every})")
+                  f"loss={recent:.4f} (avg over last {log_every})  "
+                  f"best={best_loss:.4f}")
 
-    return model, losses
+    if verbose:
+        best_step = int(np.argmin(losses)) + 1
+        print(f"  best loss {best_loss:.4f} at step {best_step}/{n_steps} "
+              f"(returning best, not final={losses[-1]:.4f})")
+
+    return best_model, losses

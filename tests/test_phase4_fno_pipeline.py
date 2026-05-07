@@ -382,3 +382,108 @@ class TestPointSampleHead:
             f"trace tensor has rank {rank} ≤ 1; output is just a global "
             f"signal scaled per receiver — head is not point-sampling"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6: Trainer must return the BEST-loss model and support cosine LR.
+# After the FNO production v2 run we observed: loss bottomed at step 193
+# (0.48), then bounced upward to 1.04 at step 1000 — and the saved model
+# was the step-1000 model, not the actually-good step-193 model. The
+# trainer needs to checkpoint the best instead, and a cosine schedule
+# stops the late-training divergence in the first place.
+# ---------------------------------------------------------------------------
+
+
+class TestTrainerBestCheckpoint:
+    """The trainer must return the model from the lowest-loss step, not
+    the model from the final step. With high learning rate or no schedule,
+    training can overshoot its useful basin late in the run."""
+
+    def _tiny_model_and_reader(self, reader, first_sample, n_t):
+        from brain_fwi.surrogate.train import _extract_receiver_positions
+        c = np.asarray(first_sample["sound_speed_voxel"])
+        obs = np.asarray(first_sample["observed_data"])
+        rec_pos = _extract_receiver_positions(first_sample)
+        model = CToTraceFNO3D(
+            grid_shape=tuple(c.shape),
+            n_timesteps=n_t,
+            n_receivers=int(obs.shape[2]),
+            hidden_channels=8,
+            num_modes=4,
+            depth=1,
+            receiver_positions=rec_pos,
+            key=jr.PRNGKey(0),
+        )
+        first_two = list(reader.sample_ids)[:2]
+
+        class _Slice:
+            sample_ids = first_two
+            def __getitem__(self, sid):
+                return reader[sid]
+            def __iter__(self):
+                return (reader[sid] for sid in first_two)
+
+        return model, _Slice()
+
+    def test_trainer_returns_best_loss_model(self, reader, first_sample, n_timesteps_distribution):
+        """Run with a high LR + constant schedule to provoke late-stage
+        divergence. The returned model's loss on the training set should
+        match min(losses), not losses[-1]."""
+        from brain_fwi.surrogate.train import (
+            train_fno_surrogate, _extract_source_positions, _normalise_c,
+            surrogate_loss,
+        )
+        n_t = min(n_timesteps_distribution)
+        model, slice_reader = self._tiny_model_and_reader(reader, first_sample, n_t)
+        # 6 steps with a deliberately huge LR to force the loss to bounce.
+        trained, losses = train_fno_surrogate(
+            model, slice_reader,
+            n_steps=6,
+            key=jr.PRNGKey(0),
+            learning_rate=5e-1,
+            lr_schedule="constant",
+            log_every=99, verbose=False,
+        )
+        # Re-evaluate the returned model against the training samples and
+        # confirm it sits at-or-below min(losses) — i.e. it isn't the
+        # step-N model that bounced.
+        src_pos = _extract_source_positions(first_sample)
+        sample = first_sample
+        c = jnp.asarray(sample["sound_speed_voxel"], dtype=jnp.float32)
+        d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)[
+            :, :n_t, :
+        ]
+        c_norm = _normalise_c(c, 1400.0, 3200.0)
+        trained_loss = float(surrogate_loss(trained, c_norm, d, src_pos, 0.3))
+        # Allow some slack for sampling noise — the assertion is that
+        # the returned model is closer to min than to max of the
+        # observed loss curve.
+        assert trained_loss <= max(losses) - (max(losses) - min(losses)) * 0.5, (
+            f"returned model loss {trained_loss:.4f} is closer to the worst "
+            f"step (max losses {max(losses):.4f}) than to the best "
+            f"(min losses {min(losses):.4f}); trainer is returning the "
+            f"final-step model rather than the best one"
+        )
+
+
+class TestTrainerCosineSchedule:
+    """A cosine schedule must actually reduce the LR over the training
+    horizon — otherwise high-LR runs keep diverging."""
+
+    def test_cosine_schedule_lowers_lr_over_steps(self):
+        """Build the schedule the trainer would build and confirm the
+        effective LR at the end is near alpha * init."""
+        import optax
+        init = 1e-3
+        n_steps = 100
+        alpha = 0.01
+        sched = optax.cosine_decay_schedule(
+            init_value=init, decay_steps=n_steps, alpha=alpha,
+        )
+        lr_first = float(sched(0))
+        lr_last = float(sched(n_steps - 1))
+        assert abs(lr_first - init) < 1e-9
+        assert lr_last < init * 0.05, (
+            f"cosine schedule didn't decay: lr@0={lr_first:.6f}, "
+            f"lr@{n_steps-1}={lr_last:.6f}; expected ~ {init*alpha:.6f}"
+        )

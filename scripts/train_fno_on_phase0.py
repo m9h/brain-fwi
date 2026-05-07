@@ -71,6 +71,26 @@ def main() -> int:
              "Lower for memory-constrained runs.",
     )
     ap.add_argument(
+        "--skip-gradient-accuracy", action="store_true",
+        help="Skip only the §7.3 gradient-accuracy gate (still run the "
+             "§7.2 trace-fidelity gate). The grad gate stacks 128 j-Wave "
+             "forwards per held-out sample and OOMs on H100-80GB at "
+             "production-arch (hidden=32, depth=2); this flag lets you "
+             "ship a trace-only validation report without the OOM risk.",
+    )
+    ap.add_argument(
+        "--lr-schedule", choices=("cosine", "constant"), default="cosine",
+        help="Learning-rate schedule. 'cosine' decays from peak LR to "
+             "lr_alpha*peak over n_steps and was added after FNO prod v2 "
+             "showed loss bottoming at step 193 (0.48) then bouncing to "
+             "1.04 by step 1000 under constant LR.",
+    )
+    ap.add_argument(
+        "--lr-alpha", type=float, default=0.01,
+        help="Cosine schedule final/peak LR ratio. 0.01 = end at 1% of "
+             "the peak LR.",
+    )
+    ap.add_argument(
         "--output-scale", type=float, default=0.0,
         help="Override the auto-estimated output scale. 0 = auto "
              "(mean d_true.std() across 10 samples). Try 1.0 to "
@@ -184,6 +204,8 @@ def main() -> int:
         n_steps=args.n_steps,
         key=train_key,
         learning_rate=args.learning_rate,
+        lr_schedule=args.lr_schedule,
+        lr_alpha=args.lr_alpha,
         lambda_spec=args.lambda_spec,
         c_min=args.c_min,
         c_max=args.c_max,
@@ -236,6 +258,16 @@ def main() -> int:
         held_out_samples,
         source_positions=src_pos,
     )
+
+    # Persist trace metrics immediately — even if grad-accuracy below
+    # OOMs, we keep the trace gate result.
+    report["metrics"] = trace_metrics
+    json_path.write_text(json.dumps(report, indent=2, default=str))
+
+    if args.skip_gradient_accuracy:
+        print("\n  --skip-gradient-accuracy set; trace-fidelity-only report")
+        print(format_gate_report(trace_metrics, None))
+        return 0
 
     # --- Gradient Accuracy (§7.3) ---------------------------------------
     print("\n" + "=" * 70)

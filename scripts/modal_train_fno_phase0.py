@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-07-fno-point-sample-head"
+CACHE_BUST = "2026-05-07-fno-cosine-best-skipgrad"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -79,10 +79,13 @@ def _train_body(
     held_out_fraction: float,
     n_timesteps: int,
     skip_validation: bool,
+    skip_gradient_accuracy: bool,
     n_grad_samples: int,
     output_scale: float,
     c_min: float,
     c_max: float,
+    lr_schedule: str,
+    lr_alpha: float,
     out_subdir: str,
 ):
     """Body of the training run, identical regardless of which GPU it runs on."""
@@ -118,10 +121,13 @@ def _train_body(
         args += ["--n-timesteps", str(n_timesteps)]
     if skip_validation:
         args += ["--skip-validation"]
+    if skip_gradient_accuracy:
+        args += ["--skip-gradient-accuracy"]
     args += ["--n-grad-samples", str(n_grad_samples)]
     if output_scale > 0:
         args += ["--output-scale", str(output_scale)]
     args += ["--c-min", str(c_min), "--c-max", str(c_max)]
+    args += ["--lr-schedule", lr_schedule, "--lr-alpha", str(lr_alpha)]
     print(f"\nLaunching: {' '.join(args)}\n")
 
     t0 = time.time()
@@ -178,10 +184,13 @@ def main(
     held_out_fraction: float = 0.2,
     n_timesteps: int = 0,           # 0 = infer from first sample
     skip_validation: bool = False,  # smoke: bypass §7.2/§7.3 gates
+    skip_gradient_accuracy: bool = False,  # surgical: skip just §7.3 (OOM-prone)
     n_grad_samples: int = 20,       # cap gradient-accuracy sample count
     output_scale: float = 0.0,      # 0 = auto-estimate from data std
     c_min: float = 1400.0,          # c-field [c_min, c_max] -> [0, 1]
     c_max: float = 3200.0,
+    lr_schedule: str = "cosine",    # "cosine" or "constant"
+    lr_alpha: float = 0.01,         # cosine final/peak LR ratio
     out_subdir: str = "default",    # subdir under output/{version}/ for per-ablation isolation
 ):
     print("=" * 64)
@@ -208,9 +217,11 @@ def main(
         held_out_fraction=held_out_fraction,
         n_timesteps=n_timesteps,
         skip_validation=skip_validation,
+        skip_gradient_accuracy=skip_gradient_accuracy,
         n_grad_samples=n_grad_samples,
         output_scale=output_scale,
         c_min=c_min, c_max=c_max,
+        lr_schedule=lr_schedule, lr_alpha=lr_alpha,
         out_subdir=out_subdir,
     )
     print(f"\nDone in {result['wall_s']/60:.1f} min")
