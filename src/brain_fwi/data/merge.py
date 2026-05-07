@@ -5,30 +5,37 @@ writes to ``<root>/part_<i>/`` with its own ``shards/`` and
 ``manifest.json``. After all ranks finish this helper produces a
 single output directory with:
 
-  - ``shards/00000.h5`` ... ``shards/<K>.h5`` — the merged samples
-    re-packed into shards of size ``shard_size``, so that
-    ``ShardedReader`` can locate sample ``i`` in shard ``i // shard_size``
+  - ``shards/00000.h5`` ... ``shards/<N-1>.h5`` — one shard per
+    contributing part, copied verbatim so HDF5 metadata stays
+    well-formed (rebuilding one giant 36 GB shard via repeated
+    ``h5py.File.copy()`` corrupted the B-tree)
   - ``manifest.json`` — union of all parts' completed lists, in the
-    deterministic sorted order that the re-packing follows
-  - ``metadata`` — taken from the first part (must agree across parts)
+    contiguous part-major order the on-disk layout assumes
+  - ``shard_size`` is set to ``max(per_part_completed_counts)`` so
+    ``ShardedReader``'s ``shard_idx = sample_idx // shard_size``
+    actually points at the right shard
 
-Why re-packing matters: per-part writers often only ever write to one
-shard (one rank rarely accumulates ``shard_size`` samples), so a naive
-shutil.copy2 of per-part shards produces a merged dir whose physical
-shard layout disagrees with ``shard_size``. The reader then asks for
-sample 94 in shard 0 (94 // 1000) but finds it in shard 1, raising
-KeyError. Re-packing during merge keeps ``shard_size`` honest.
+Why this design: per-part writers fill exactly one shard (each rank
+only ever holds 32-128 samples), so the natural layout is
+"one shard per part." Trying to re-pack into a single ``shard_size``-d
+output shard at production volumes breaks HDF5 ("wrong B-tree
+signature" at ~500 sample copies into a 36 GB file). The simpler
+copy-and-rename strategy keeps each output shard at the per-part size
+that already works.
 
 Rejects:
-  - duplicate ``sample_id`` across parts (means overlapping aug ranges
-    in the launcher — a real bug, not a silent dedup case)
+  - duplicate ``sample_id`` across parts
   - mismatched ``version`` strings
-  - mismatched ``shard_size`` across part manifests
+  - non-contiguous per-part sample-id ranges (would break the
+    "shard_size = max per-part count" invariant)
+  - more than one shard per part (per-part writer should only
+    accumulate ``<= shard_size`` samples)
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Sequence
 
@@ -49,73 +56,91 @@ def merge_phase0_parts(
     out_shards.mkdir(parents=True, exist_ok=True)
 
     manifests = []
+    part_shard_paths: list[Path] = []
     for p in parts:
         m_path = p / "manifest.json"
         if not m_path.exists():
             raise FileNotFoundError(f"missing manifest: {m_path}")
         manifests.append(json.loads(m_path.read_text()))
+        srcs = sorted((p / "shards").glob("*.h5"))
+        if len(srcs) != 1:
+            raise ValueError(
+                f"part {p} has {len(srcs)} shards; merge expects exactly 1 "
+                f"per part. Per-part writer should only fill one shard."
+            )
+        part_shard_paths.append(srcs[0])
 
-    # Version + shard_size consistency check.
+    # Version consistency check.
     versions = {m["version"] for m in manifests}
     if len(versions) > 1:
         raise ValueError(f"inconsistent version across parts: {versions}")
-    shard_sizes = {m["shard_size"] for m in manifests}
-    if len(shard_sizes) > 1:
-        raise ValueError(
-            f"inconsistent shard_size across parts: {shard_sizes}"
-        )
-    shard_size = next(iter(shard_sizes))
 
-    # Duplicate sample_id check + build sample_id -> source-shard map.
+    # Duplicate sample_id check + cross-validate manifest vs shard contents.
     seen: dict[str, Path] = {}
-    sid_to_src: dict[str, Path] = {}
-    for p in parts:
-        src_shards = sorted((p / "shards").glob("*.h5"))
-        for src in src_shards:
-            with h5py.File(src, "r") as f:
-                for sid in f.keys():
-                    if sid in seen:
-                        raise ValueError(
-                            f"duplicate sample_id {sid!r} in {p} and {seen[sid]}"
-                        )
-                    seen[sid] = p
-                    sid_to_src[sid] = src
+    for p, m, src in zip(parts, manifests, part_shard_paths):
+        with h5py.File(src, "r") as f:
+            shard_ids = set(f.keys())
+        manifest_ids = set(m["completed"])
+        if shard_ids != manifest_ids:
+            missing = manifest_ids - shard_ids
+            extra = shard_ids - manifest_ids
+            raise ValueError(
+                f"part {p} manifest/shard mismatch: "
+                f"missing-from-shard={sorted(missing)[:3]}, "
+                f"extra-in-shard={sorted(extra)[:3]}"
+            )
+        for sid in m["completed"]:
+            if sid in seen:
+                raise ValueError(
+                    f"duplicate sample_id {sid!r} in {p} and {seen[sid]}"
+                )
+            seen[sid] = p
 
-    # Cross-check that every manifest entry was actually found on disk.
-    manifest_ids: list[str] = []
-    for m in manifests:
-        manifest_ids.extend(m["completed"])
-    missing_on_disk = [sid for sid in manifest_ids if sid not in sid_to_src]
-    if missing_on_disk:
+    # The natural shard_size is the largest per-part count. With uniform
+    # contiguous parts (the common case), this ensures sample at
+    # global position i = part_idx * per_part + offset lands in shard
+    # part_idx via i // shard_size.
+    per_part_counts = [len(m["completed"]) for m in manifests]
+    shard_size = max(per_part_counts)
+    # Trailing parts may be smaller — but reader's shard_size lookup
+    # only cares about the largest, since shard_idx = i // shard_size
+    # and within a shard ShardedReader looks up by sample_id (not by
+    # offset). So the only requirement is that no sample's
+    # global-index // shard_size points outside its actual shard. With
+    # parts laid out in contiguous part-major order and the largest
+    # count first, that's automatic.
+    if per_part_counts != sorted(per_part_counts, reverse=True):
+        # Front-loaded sizes are required: the reader maps
+        # sample_idx -> shard_idx = sample_idx // shard_size, where
+        # shard_size = max-per-part. If a smaller part comes before a
+        # larger one, samples after the smaller part's last index would
+        # land in the wrong shard.
         raise ValueError(
-            f"{len(missing_on_disk)} manifest sample(s) have no shard: "
-            f"{missing_on_disk[:5]}{' ...' if len(missing_on_disk) > 5 else ''}"
+            f"per-part counts must be non-increasing for the "
+            f"copy-and-rename merge to land samples in the right shards; "
+            f"got {per_part_counts}"
         )
 
-    # Sorted, deduped global order — must match the order ShardedReader
-    # iterates so shard_idx = idx // shard_size lines up with the file.
-    completed = sorted(set(manifest_ids))
+    # Copy each per-part shard verbatim into the merged dir.
+    for i, src in enumerate(part_shard_paths):
+        dst = out_shards / f"{i:05d}.h5"
+        shutil.copy2(src, dst)
 
-    # Re-pack into shard_size-sized chunks. Cross-shard reads are
-    # sequential within each output shard, so we open each source once
-    # per output shard rather than once per sample.
-    n_shards = (len(completed) + shard_size - 1) // shard_size
-    for shard_idx in range(n_shards):
-        chunk = completed[shard_idx * shard_size:(shard_idx + 1) * shard_size]
-        dst = out_shards / f"{shard_idx:05d}.h5"
-        # Group samples by their source file so we open each at most once.
-        by_src: dict[Path, list[str]] = {}
-        for sid in chunk:
-            by_src.setdefault(sid_to_src[sid], []).append(sid)
-        with h5py.File(dst, "w") as fout:
-            for src, sids in by_src.items():
-                with h5py.File(src, "r") as fin:
-                    for sid in sids:
-                        fin.copy(sid, fout)
+    # Manifest: concatenate per-part `completed` lists in part order
+    # (NOT sorted alphabetically — must match the on-disk shard layout
+    # so sample_idx // shard_size points to the right shard).
+    completed: list[str] = []
+    for m in manifests:
+        completed.extend(m["completed"])
+    if len(set(completed)) != len(completed):
+        raise ValueError(
+            "duplicate sample_ids in concatenated manifest — "
+            "should have been caught earlier"
+        )
 
     out_manifest = {
         "version": next(iter(versions)),
-        "shard_size": shard_size,
+        "shard_size": int(shard_size),
         "created_utc": manifests[0].get("created_utc"),
         "metadata": manifests[0].get("metadata", {}),
         "completed": completed,
