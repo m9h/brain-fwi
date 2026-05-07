@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-06-fno-skip-validation"
+CACHE_BUST = "2026-05-06-fno-ablation-levers"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -80,6 +80,10 @@ def _train_body(
     n_timesteps: int,
     skip_validation: bool,
     n_grad_samples: int,
+    output_scale: float,
+    c_min: float,
+    c_max: float,
+    out_subdir: str,
 ):
     """Body of the training run, identical regardless of which GPU it runs on."""
     import os
@@ -96,7 +100,7 @@ def _train_body(
     )
 
     data_path = f"/dataset/output/{version}_{phantom}_{grid_size}/merged"
-    out_path = f"/output/{version}_{phantom}_{grid_size}/fno_surrogate"
+    out_path = f"/output/{version}_{phantom}_{grid_size}/{out_subdir}/fno_surrogate"
 
     args = [
         "python", "-u", "/opt/brain-fwi/scripts/train_fno_on_phase0.py",
@@ -115,6 +119,9 @@ def _train_body(
     if skip_validation:
         args += ["--skip-validation"]
     args += ["--n-grad-samples", str(n_grad_samples)]
+    if output_scale > 0:
+        args += ["--output-scale", str(output_scale)]
+    args += ["--c-min", str(c_min), "--c-max", str(c_max)]
     print(f"\nLaunching: {' '.join(args)}\n")
 
     t0 = time.time()
@@ -172,6 +179,10 @@ def main(
     n_timesteps: int = 0,           # 0 = infer from first sample
     skip_validation: bool = False,  # smoke: bypass §7.2/§7.3 gates
     n_grad_samples: int = 20,       # cap gradient-accuracy sample count
+    output_scale: float = 0.0,      # 0 = auto-estimate from data std
+    c_min: float = 1400.0,          # c-field [c_min, c_max] -> [0, 1]
+    c_max: float = 3200.0,
+    out_subdir: str = "default",    # subdir under output/{version}/ for per-ablation isolation
 ):
     print("=" * 64)
     print(f"  FNO surrogate training on Modal {gpu}")
@@ -198,6 +209,9 @@ def main(
         n_timesteps=n_timesteps,
         skip_validation=skip_validation,
         n_grad_samples=n_grad_samples,
+        output_scale=output_scale,
+        c_min=c_min, c_max=c_max,
+        out_subdir=out_subdir,
     )
     print(f"\nDone in {result['wall_s']/60:.1f} min")
     print(f"Pull results: modal volume get {OUTPUT_VOL} "

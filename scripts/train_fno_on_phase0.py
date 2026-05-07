@@ -70,6 +70,27 @@ def main() -> int:
              "sample, so ~20 is the practical ceiling on H100-80GB. "
              "Lower for memory-constrained runs.",
     )
+    ap.add_argument(
+        "--output-scale", type=float, default=0.0,
+        help="Override the auto-estimated output scale. 0 = auto "
+             "(mean d_true.std() across 10 samples). Try 1.0 to "
+             "diagnose flat-loss runs where the small auto-scale "
+             "(~5e-3) crushes early gradients.",
+    )
+    ap.add_argument(
+        "--c-min", type=float, default=1400.0,
+        help="Lower bound for c-field [c_min, c_max] -> [0, 1] "
+             "normalisation. Tighter bounds stretch the input range "
+             "the FNO sees; v2a c is mostly in [1400, 1700] (water + "
+             "brain), so the default puts most of the input in the "
+             "bottom 15% of the normalised range.",
+    )
+    ap.add_argument(
+        "--c-max", type=float, default=3200.0,
+        help="Upper bound for c-field normalisation. Lower it (e.g. "
+             "1800) to give the FNO more dynamic range on the soft "
+             "tissues where most of the wave action is.",
+    )
     args = ap.parse_args()
 
     # --- Setup ----------------------------------------------------------
@@ -112,13 +133,17 @@ def main() -> int:
 
     # Compute output scale (target.std() across dataset)
     # Sample up to 10 random training items to estimate std
-    print("  estimating output scale...")
-    n_est = min(len(train_ids), 10)
-    est_stds = []
-    for i in range(n_est):
-        d_est = reader[train_ids[i]]["observed_data"]
-        est_stds.append(float(np.std(d_est)))
-    output_scale = float(np.mean(est_stds))
+    if args.output_scale > 0:
+        output_scale = args.output_scale
+        print(f"  output_scale: {output_scale} (overridden via --output-scale)")
+    else:
+        print("  estimating output scale...")
+        n_est = min(len(train_ids), 10)
+        est_stds = []
+        for i in range(n_est):
+            d_est = reader[train_ids[i]]["observed_data"]
+            est_stds.append(float(np.std(d_est)))
+        output_scale = float(np.mean(est_stds))
 
     print(f"  grid_shape:   {grid_shape}")
     print(f"  n_t:          {n_t}")
@@ -149,6 +174,8 @@ def main() -> int:
         key=train_key,
         learning_rate=args.learning_rate,
         lambda_spec=args.lambda_spec,
+        c_min=args.c_min,
+        c_max=args.c_max,
         held_out_ids=held_out_ids,
         verbose=True,
     )
