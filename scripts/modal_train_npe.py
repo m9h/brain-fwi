@@ -31,7 +31,7 @@ import modal
 app = modal.App("brain-fwi-npe")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-06-npe-real-phase0-v2a"
+CACHE_BUST = "2026-05-06-npe-sbc-fix"
 
 DATA_VOL_NAME = "brain-fwi-phase0"
 OUTPUT_VOL_NAME = "brain-fwi-npe-output"
@@ -168,27 +168,8 @@ def train_npe_on_phase0(
     print(f"Δ NLL:            {initial_nll - final_nll:+.4f} (lower is better)")
     print(f"Train wall:       {train_wall:.1f}s ({train_wall/n_steps*1000:.1f} ms/step)")
 
-    # SBC calibration on the held-out split
-    sbc_p = None
-    if n_sbc_samples > 0 and len(test_idx) >= 4:
-        print(f"\nSBC ({n_sbc_samples} samples per held-out point)...")
-        t0 = time.time()
-
-        def sampler(d_obs, key, n):
-            return trained.sample(jnp.asarray(d_obs), key, n_samples=n)
-
-        ranks = sbc_ranks(
-            sampler=sampler,
-            theta_true=jnp.asarray(theta_te),
-            d_obs=jnp.asarray(d_te),
-            key=sbc_key,
-            n_samples=n_sbc_samples,
-        )
-        sbc_p = float(calibration_statistic(ranks))
-        print(f"  SBC p-value:    {sbc_p:.4f}  (well-calibrated > 0.01)")
-        print(f"  SBC wall:       {time.time() - t0:.1f}s")
-
-    # Save trained flow + metrics
+    # Save trained flow + initial metrics BEFORE SBC so a SBC failure
+    # doesn't lose the training outcome (training is the expensive part).
     flow_path = out_dir / "flow.eqx"
     metrics_path = out_dir / "metrics.json"
     eqx.tree_serialise_leaves(str(flow_path), trained)
@@ -205,7 +186,8 @@ def train_npe_on_phase0(
         "final_nll": final_nll,
         "delta_nll": initial_nll - final_nll,
         "train_wall_s": train_wall,
-        "sbc_p_value": sbc_p,
+        "sbc_p_value": None,
+        "sbc_is_calibrated": None,
         "loss_curve": [float(x) for x in losses],
         "n_transforms": int(n_transforms),
         "nn_width": int(nn_width),
@@ -214,9 +196,40 @@ def train_npe_on_phase0(
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
     output_vol.commit()
-
     print(f"\nSaved flow:       {flow_path}")
     print(f"Saved metrics:    {metrics_path}")
+
+    # SBC calibration on the held-out split. Failures here update the
+    # already-saved metrics with sbc_error rather than blowing away
+    # everything we just spent compute on.
+    if n_sbc_samples > 0 and len(test_idx) >= 4:
+        print(f"\nSBC ({n_sbc_samples} samples per held-out point)...")
+        t0 = time.time()
+        try:
+            ranks = sbc_ranks(
+                sampler=trained,
+                theta_held_out=jnp.asarray(theta_te),
+                d_held_out=jnp.asarray(d_te),
+                n_posterior_samples=n_sbc_samples,
+                key=sbc_key,
+            )
+            stats = calibration_statistic(np.asarray(ranks))
+            metrics["sbc_p_value"] = float(stats["p_value"])
+            metrics["sbc_is_calibrated"] = bool(stats["is_calibrated"])
+            metrics["sbc_chi2"] = float(stats["chi2"])
+            metrics["sbc_dof"] = int(stats["dof"])
+            print(f"  SBC p-value:    {metrics['sbc_p_value']:.4f}  "
+                  f"(well-calibrated if > 0.05)")
+            print(f"  is_calibrated:  {metrics['sbc_is_calibrated']}")
+            print(f"  SBC wall:       {time.time() - t0:.1f}s")
+        except Exception as e:
+            metrics["sbc_error"] = f"{type(e).__name__}: {e}"
+            print(f"  SBC failed: {metrics['sbc_error']}")
+        with open(metrics_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+        output_vol.commit()
+
+    print(f"\nFinal metrics:    {metrics_path}")
     print(f"Pull back with:   modal volume get {OUTPUT_VOL_NAME} {out_dir} ./")
     return metrics
 
