@@ -84,7 +84,13 @@ class CToTraceFNO3D(eqx.Module):
     n_timesteps: int = eqx.field(static=True)
     n_receivers: int = eqx.field(static=True)
     hidden_channels: int = eqx.field(static=True)
-    output_scale: float
+    # Pin output_scale as static (non-trainable). When trainable it
+    # collapses to zero — minimising loss to ||d_true||²/||d_true||² ≈ 1.0
+    # by simply zeroing the prediction — and the FNO body then has no
+    # gradient to learn anything. Confirmed empirically by 4-way ablation:
+    # output_scale=1.0 init starts at loss 23 and converges to the same
+    # 1.30 plateau as auto-estimated 5e-3 within 100 steps.
+    output_scale: float = eqx.field(static=True)
 
     def __init__(
         self,
