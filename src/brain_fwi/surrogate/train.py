@@ -140,25 +140,24 @@ def train_fno_surrogate(
     held_out_ids: Optional[Sequence[str]] = None,
     log_every: int = 50,
     verbose: bool = True,
+    batch_size: int = 1,
 ) -> Tuple[CToTraceFNO3D, List[float]]:
-    """Train ``model`` on the ``reader``'s samples.
+    """Train ``model`` on the ``reader``'s samples with gradient accumulation.
 
     Args:
         model: FNO surrogate to train (returned updated).
         reader: ``ShardedReader`` or any object with ``sample_ids``,
-            ``__getitem__``, and the expected field names. Must expose
-            ``sound_speed_voxel`` and ``observed_data`` per sample.
-        n_steps: number of gradient steps.
+            ``__getitem__``, and the expected field names.
+        n_steps: number of gradient updates to perform.
         key: PRNG key for sample selection.
         c_min, c_max: velocity-normalisation bounds.
         learning_rate: Adam LR.
         lambda_spec: spectral-loss weight.
-        source_positions: override the auto-extracted helmet. Use when
-            the reader does not expose transducer coords (e.g. tests).
-        held_out_ids: sample ids to exclude from training. The validation
-            half of the Phase-0 split goes here.
-        log_every: print a loss line every N steps.
+        source_positions: override the auto-extracted helmet.
+        held_out_ids: sample ids to exclude from training.
+        log_every: print a loss line every N updates.
         verbose: print progress.
+        batch_size: number of samples to average per gradient step (gradient accumulation).
 
     Returns:
         ``(trained_model, loss_history)``.
@@ -170,8 +169,6 @@ def train_fno_surrogate(
     if not train_ids:
         raise ValueError("no training samples after filtering held-out ids")
 
-    # Resolve source positions from the first sample unless caller
-    # provided them explicitly.
     if source_positions is None:
         source_positions = _extract_source_positions(reader[train_ids[0]])
     source_positions = list(source_positions)
@@ -180,41 +177,56 @@ def train_fno_surrogate(
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     @eqx.filter_jit
-    def step(m, opt_state, c_norm, d_true):
+    def compute_loss_and_grad(m, c_norm, d_true):
         def loss_fn(m_):
             return surrogate_loss(m_, c_norm, d_true, source_positions, lambda_spec)
-        loss, grads = eqx.filter_value_and_grad(loss_fn)(m)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        m = eqx.apply_updates(m, updates)
-        return m, opt_state, loss
+        return eqx.filter_value_and_grad(loss_fn)(m)
 
     losses: List[float] = []
     n_train = len(train_ids)
+    
+    # Pre-process n_t_model once
+    n_t_model = int(model.n_timesteps)
+
     for s in range(n_steps):
-        key, subkey = jr.split(key)
-        idx = int(jr.randint(subkey, (), 0, n_train))
-        sample = reader[train_ids[idx]]
-        c = jnp.asarray(sample["sound_speed_voxel"], dtype=jnp.float32)
-        d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)
-        c_norm = _normalise_c(c, c_min, c_max)
+        # Accumulate gradients over batch_size samples
+        accum_grads = None
+        accum_loss = 0.0
+        
+        for _ in range(batch_size):
+            key, subkey = jr.split(key)
+            idx = int(jr.randint(subkey, (), 0, n_train))
+            sample = reader[train_ids[idx]]
+            c = jnp.asarray(sample["sound_speed_voxel"], dtype=jnp.float32)
+            d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)
+            c_norm = _normalise_c(c, c_min, c_max)
 
-        # Phase-0 samples have variable trace length (each MIDA aug has
-        # a slightly different max-c, hence a different CFL-derived dt
-        # and n_timesteps). The FNO head has a fixed-size output, so we
-        # crop to model.n_timesteps. Pad if a sample happens to be
-        # shorter than the model's expected length.
-        n_t_model = int(model.n_timesteps)
-        if d.shape[1] >= n_t_model:
-            d = d[:, :n_t_model, :]
-        else:
-            pad = jnp.zeros(
-                (d.shape[0], n_t_model - d.shape[1], d.shape[2]),
-                dtype=d.dtype,
-            )
-            d = jnp.concatenate([d, pad], axis=1)
+            if d.shape[1] >= n_t_model:
+                d = d[:, :n_t_model, :]
+            else:
+                pad = jnp.zeros(
+                    (d.shape[0], n_t_model - d.shape[1], d.shape[2]),
+                    dtype=d.dtype,
+                )
+                d = jnp.concatenate([d, pad], axis=1)
 
-        model, opt_state, loss = step(model, opt_state, c_norm, d)
-        losses.append(float(loss))
+            loss, grads = compute_loss_and_grad(model, c_norm, d)
+            
+            if accum_grads is None:
+                accum_grads = grads
+            else:
+                accum_grads = jax.tree.map(lambda g1, g2: g1 + g2, accum_grads, grads)
+            accum_loss += float(loss)
+
+        # Average gradients and loss
+        accum_grads = jax.tree.map(lambda g: g / batch_size, accum_grads)
+        mean_loss = accum_loss / batch_size
+        
+        # Apply update
+        updates, opt_state = optimizer.update(accum_grads, opt_state)
+        model = eqx.apply_updates(model, updates)
+        
+        losses.append(mean_loss)
         if verbose and (s + 1) % log_every == 0:
             recent = np.mean(losses[-log_every:])
             print(f"  FNO-train step {s+1}/{n_steps}: "
