@@ -154,6 +154,16 @@ def main() -> int:
     key = jr.PRNGKey(args.seed)
     model_key, train_key = jr.split(key)
 
+    from brain_fwi.surrogate.train import _extract_receiver_positions
+    receiver_pos = _extract_receiver_positions(first)
+    if len(receiver_pos) != n_recv:
+        raise ValueError(
+            f"sensor_positions yielded {len(receiver_pos)} receivers but "
+            f"observed_data has n_recv={n_recv}"
+        )
+    print(f"  receivers:    {len(receiver_pos)} positions, "
+          f"first={receiver_pos[0]} last={receiver_pos[-1]}")
+
     model = CToTraceFNO3D(
         grid_shape=grid_shape,
         n_timesteps=n_t,
@@ -162,6 +172,7 @@ def main() -> int:
         num_modes=args.num_modes,
         depth=args.depth,
         output_scale=output_scale,
+        receiver_positions=receiver_pos,
         key=model_key,
     )
 

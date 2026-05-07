@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -27,6 +28,19 @@ import pytest
 
 from brain_fwi.data import ShardedReader
 from brain_fwi.surrogate.fno3d import CToTraceFNO3D
+
+
+def _voxelise_helmet(positions_m: np.ndarray, dx: float, grid_shape: tuple) -> tuple:
+    """Convert (N, 3) helmet positions in metres to clamped voxel-grid tuples.
+
+    Mirrors ``brain_fwi.surrogate.train._extract_source_positions``.
+    """
+    voxels = np.round(positions_m / dx).astype(int)
+    nx, ny, nz = grid_shape
+    voxels[:, 0] = np.clip(voxels[:, 0], 0, nx - 1)
+    voxels[:, 1] = np.clip(voxels[:, 1], 0, ny - 1)
+    voxels[:, 2] = np.clip(voxels[:, 2], 0, nz - 1)
+    return tuple((int(v[0]), int(v[1]), int(v[2])) for v in voxels)
 
 
 _DATASET_CANDIDATES = (
@@ -134,6 +148,11 @@ class TestFnoModelOnV2a:
     def model(self, first_sample):
         c = np.asarray(first_sample["sound_speed_voxel"])
         obs = np.asarray(first_sample["observed_data"])
+        sensor_pos = _voxelise_helmet(
+            np.asarray(first_sample["sensor_positions"]),
+            float(first_sample["dx"]),
+            tuple(c.shape),
+        )
         return CToTraceFNO3D(
             grid_shape=tuple(c.shape),
             n_timesteps=int(obs.shape[1]),
@@ -141,6 +160,7 @@ class TestFnoModelOnV2a:
             hidden_channels=8,   # tiny — local CPU smoke
             num_modes=4,
             depth=1,
+            receiver_positions=sensor_pos,
             key=jr.PRNGKey(0),
         )
 
@@ -193,6 +213,11 @@ class TestTrainFnoOneStep:
         # path (not pad) kicks in — pad would silently teach FNO that late
         # time-steps are zero for short samples.
         model_n_t = min(n_timesteps_distribution)
+        sensor_pos = _voxelise_helmet(
+            np.asarray(first_sample["sensor_positions"]),
+            float(first_sample["dx"]),
+            tuple(c.shape),
+        )
         model = CToTraceFNO3D(
             grid_shape=tuple(c.shape),
             n_timesteps=model_n_t,
@@ -200,6 +225,7 @@ class TestTrainFnoOneStep:
             hidden_channels=8,
             num_modes=4,
             depth=1,
+            receiver_positions=sensor_pos,
             key=jr.PRNGKey(0),
         )
         # Use only the first 2 sample IDs so the test runs in <30s on CPU.
@@ -232,3 +258,127 @@ class TestTrainFnoOneStep:
             )
         assert len(losses) == 1
         assert np.isfinite(losses[0]), f"first-step loss not finite: {losses[0]}"
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: Point-sample head locality (the v1 global-pool architecture
+# could not break out of a predict-zero plateau because all spatial info was
+# discarded before the head; the v2 head looks up features at each receiver's
+# voxel, preserving spatial structure).
+# ---------------------------------------------------------------------------
+
+
+class TestPointSampleHead:
+    """Catches regressions to a global-pool readout. Without point-sampling
+    the FNO collapses to a constant prediction (loss ~ 1.30 plateau) because
+    receivers can't be distinguished by anything except a fixed per-receiver
+    output weight in the head's last linear layer."""
+
+    GRID = (16, 16, 16)
+    N_T = 32
+    HIDDEN = 8
+
+    def _build(self, receiver_positions, *, key=0):
+        return CToTraceFNO3D(
+            grid_shape=self.GRID,
+            n_timesteps=self.N_T,
+            n_receivers=len(receiver_positions),
+            hidden_channels=self.HIDDEN,
+            num_modes=4,
+            depth=1,
+            receiver_positions=receiver_positions,
+            key=jr.PRNGKey(key),
+        )
+
+    def test_constructor_requires_receiver_positions(self):
+        """Without receiver positions the model can't point-sample, so the
+        new constructor must reject calls that omit the arg."""
+        with pytest.raises(TypeError):
+            CToTraceFNO3D(
+                grid_shape=self.GRID,
+                n_timesteps=self.N_T,
+                n_receivers=2,
+                hidden_channels=self.HIDDEN,
+                num_modes=4,
+                depth=1,
+                key=jr.PRNGKey(0),
+            )  # type: ignore[call-arg]
+
+    def test_receiver_positions_baked_in_as_static(self):
+        """The receiver coordinates must be static so they don't show up
+        as differentiable leaves and don't drift during training."""
+        model = self._build(((4, 4, 4), (12, 12, 12)))
+        leaves = jax.tree.leaves(eqx.filter(model, eqx.is_inexact_array))
+        # Voxel coords are integers — the JAX inexact-array filter should
+        # exclude them entirely. Any leaked float receiver leaf would be
+        # a regression.
+        for leaf in leaves:
+            assert leaf.dtype.kind in ("f", "c"), leaf
+            # Sanity: make sure no leaf is suspiciously shaped like a
+            # (n_recv, 3) coordinate array.
+            assert leaf.shape != (2, 3), (
+                f"receiver_positions leaked as a trainable leaf: {leaf.shape}"
+            )
+
+    def test_local_perturbation_affects_local_receiver_more(self):
+        """Local change in the c-field near receiver 0 should affect
+        rec 0's trace MORE than rec 1's. Under the old global-pool head
+        any input change propagates to all receivers' traces equally
+        (they share the same pooled feature vector), so the inequality
+        below holds only for a spatial-gather head."""
+        rec_pos = ((4, 4, 4), (12, 12, 12))
+        model = self._build(rec_pos)
+        c0 = jnp.full(self.GRID, 0.4, dtype=jnp.float32)
+        # Bump c-field around receiver 0 by half its range.
+        c1 = c0.at[3:6, 3:6, 3:6].set(0.9)
+        out0 = model(c0, src_pos_grid=(0, 0, 0))
+        out1 = model(c1, src_pos_grid=(0, 0, 0))
+
+        change_at_0 = float(jnp.mean(jnp.abs(out0[:, 0] - out1[:, 0])))
+        change_at_1 = float(jnp.mean(jnp.abs(out0[:, 1] - out1[:, 1])))
+        assert change_at_0 > 5.0 * change_at_1, (
+            f"local c-perturbation near receiver 0 should affect that "
+            f"receiver's trace much more than a far receiver's; got "
+            f"change_at_0={change_at_0:.4e} vs change_at_1={change_at_1:.4e}. "
+            f"This usually means the head is globally pooling features."
+        )
+
+    def test_two_receivers_at_same_voxel_produce_same_trace(self):
+        """A direct property of point-sampling: two receivers placed at
+        the same voxel must read the same feature vector and thus produce
+        the same trace. The global-pool head produces *different* traces
+        for these because the head's last linear layer assigns different
+        output weights per receiver index."""
+        rec_pos = ((4, 4, 4), (4, 4, 4))
+        model = self._build(rec_pos)
+        c = jnp.full(self.GRID, 0.5, dtype=jnp.float32)
+        # Use a c-field that has spatial variance so the FNO body
+        # produces non-trivial features.
+        c = c.at[1:4, 1:4, 1:4].set(0.9)
+        out = model(c, src_pos_grid=(0, 0, 0))
+        np.testing.assert_allclose(
+            np.asarray(out[:, 0]),
+            np.asarray(out[:, 1]),
+            atol=1e-5,
+            err_msg="two receivers at the same voxel produced different traces "
+                    "— the head is not point-sampling identically per receiver",
+        )
+
+    def test_output_rank_scales_with_n_receivers(self):
+        """The old global-pool head had output rank ≤ hidden_channels per
+        shot regardless of n_receivers. The new head should have rank up
+        to n_receivers (each receiver column is independent)."""
+        rec_pos = tuple((i, 8, 8) for i in range(2, 14, 2))  # 6 receivers
+        model = self._build(rec_pos)
+        c = jnp.linspace(0.0, 1.0, int(np.prod(self.GRID))).reshape(self.GRID)
+        out = model(c, src_pos_grid=(0, 0, 0))
+        # Compute matrix rank of the (n_t, n_recv) trace tensor — a
+        # globally-pooled head with the same head weights would yield
+        # rank 1 (every column is a linear scaling of the same source
+        # vector). Point-sampling should yield rank > 1 (with non-trivial
+        # spatial variation in c).
+        rank = int(np.linalg.matrix_rank(np.asarray(out), tol=1e-6))
+        assert rank > 1, (
+            f"trace tensor has rank {rank} ≤ 1; output is just a global "
+            f"signal scaled per receiver — head is not point-sampling"
+        )

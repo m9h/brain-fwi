@@ -1,13 +1,7 @@
-"""3D FNO surrogate scaffold — ``(D, H, W) velocity + source-position``
+"""3D FNO surrogate — ``(D, H, W) velocity + source-position``
 → ``(N_t, N_recv) helmet traces``.
 
-Implements §10 step 2 of ``docs/design/phase4_fno_surrogate.md`` at MVP
-scope: a thin wrapper around ``pdequinox.arch.ClassicFNO`` plus a
-global-pool → MLP readout that produces a per-shot trace tensor.
-
-This is the *architecture* step. The real surrogate training loop
-lives in :mod:`brain_fwi.surrogate.train` (to be written — §10 step 3)
-and consumes Phase-0 shards via :class:`~brain_fwi.data.ShardedReader`.
+Implements §10 step 2 of ``docs/design/phase4_fno_surrogate.md``.
 
 Design choices:
 
@@ -17,33 +11,37 @@ Design choices:
   (rather than concatenating ``src_pos`` as a scalar) lets the FNO
   condition on source location spatially, which matches how the wave
   equation depends on the forcing location.
-- **Readout head**: global-average-pool over spatial axes, then a small
-  MLP mapping the feature vector to ``N_t × N_recv`` entries. This is
-  the MVP — a spatial-gather head that reads the FNO's latent field at
-  the sensor coordinates is the natural V2 upgrade once we measure
-  trace fidelity (§7.2 gate).
-- **Backed by pdequinox**: we use ``pdequinox.arch.ClassicFNO`` for robust
-  spectral handling and consistent initialisation across 2D/3D. It takes
-  ``(channels, D, H, W)`` input and preserves spatial shape with a
-  configurable channel count.
+- **Readout head — point-sample at receiver coordinates**. The earlier
+  global-average-pool readout discarded all spatial structure: the
+  entire ``(hidden_channels, D, H, W)`` feature volume collapsed to
+  ``hidden_channels`` numbers, after which the head MLP had to fan
+  those out to ``N_t × N_recv`` outputs via a fixed per-receiver
+  weighting. Empirically this collapsed to predict-zero everywhere
+  on the v2a dataset (loss locked at ~1.30 across 4 ablations of
+  ``lambda_spec`` / ``output_scale`` / ``c_min`` / ``c_max`` /
+  learning-rate). The point-sample head reads ``features[:, rx, ry, rz]``
+  at each receiver voxel and runs an MLP per receiver to produce its
+  trace — preserving the spatial information the FNO body computed.
+- **Backed by UNONet** for robust spectral handling.
 
-Usage sketch::
+Usage::
 
-    key = jr.PRNGKey(0)
+    receivers = ((48, 0, 48), (48, 95, 48), ...)  # voxel coords
     model = CToTraceFNO3D(
         grid_shape=(96, 96, 96),
-        n_timesteps=74,
+        n_timesteps=1100,
         n_receivers=128,
-        hidden_channels=32, num_modes=12, num_blocks=4,
-        key=key,
+        hidden_channels=32, num_modes=12, depth=2,
+        receiver_positions=receivers,
+        key=jr.PRNGKey(0),
     )
     c_norm = (velocity - c_min) / (c_max - c_min)  # (D, H, W)
-    traces = model(c_norm, src_pos_grid=(48, 48, 48))  # (74, 128)
+    traces = model(c_norm, src_pos_grid=(48, 48, 48))  # (1100, 128)
 """
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -74,8 +72,12 @@ def _source_spike(
 class CToTraceFNO3D(eqx.Module):
     """``(D, H, W) sound speed`` → ``(N_t, N_recv) helmet traces``.
 
-    MVP scaffold upgraded to UNO per Phase 4 Evidence 9.2.1.
-    Fixed helmet geometry is baked into the output shape.
+    Spatial-gather readout: the trained backbone produces a
+    ``(hidden_channels, D, H, W)`` feature volume; for each receiver
+    voxel ``(rx, ry, rz)`` the model reads ``features[:, rx, ry, rz]``
+    and runs a shared per-receiver MLP to produce that receiver's
+    ``n_timesteps``-long trace. Receiver coordinates are baked in as
+    static (non-trainable) ints so they don't drift during training.
     """
 
     backbone: UNONet
@@ -85,12 +87,13 @@ class CToTraceFNO3D(eqx.Module):
     n_receivers: int = eqx.field(static=True)
     hidden_channels: int = eqx.field(static=True)
     # Pin output_scale as static (non-trainable). When trainable it
-    # collapses to zero — minimising loss to ||d_true||²/||d_true||² ≈ 1.0
-    # by simply zeroing the prediction — and the FNO body then has no
-    # gradient to learn anything. Confirmed empirically by 4-way ablation:
-    # output_scale=1.0 init starts at loss 23 and converges to the same
-    # 1.30 plateau as auto-estimated 5e-3 within 100 steps.
+    # collapses to zero — minimising loss by simply zeroing the
+    # prediction — and the FNO body then has no gradient to learn
+    # anything. Confirmed empirically.
     output_scale: float = eqx.field(static=True)
+    # Receiver voxel coords as a flat tuple-of-ints triple. Tuple form
+    # keeps it static (no float leaves) and JIT-compatible.
+    receiver_positions: Tuple[Tuple[int, int, int], ...] = eqx.field(static=True)
 
     def __init__(
         self,
@@ -98,18 +101,34 @@ class CToTraceFNO3D(eqx.Module):
         n_timesteps: int,
         n_receivers: int,
         *,
+        receiver_positions: Sequence[Tuple[int, int, int]],
         hidden_channels: int = 32,
         num_modes: int = 12,
         depth: int = 2,
         output_scale: float = 1.0,
         key: jax.Array,
     ):
+        if len(receiver_positions) != n_receivers:
+            raise ValueError(
+                f"receiver_positions has {len(receiver_positions)} entries "
+                f"but n_receivers={n_receivers}"
+            )
+        nx, ny, nz = grid_shape
+        for i, (rx, ry, rz) in enumerate(receiver_positions):
+            if not (0 <= rx < nx and 0 <= ry < ny and 0 <= rz < nz):
+                raise ValueError(
+                    f"receiver {i} at {(rx, ry, rz)} outside grid {grid_shape}"
+                )
+
         fno_key, head_key = jr.split(key)
         self.grid_shape = tuple(int(x) for x in grid_shape)
         self.n_timesteps = int(n_timesteps)
         self.n_receivers = int(n_receivers)
         self.hidden_channels = int(hidden_channels)
         self.output_scale = float(output_scale)
+        self.receiver_positions = tuple(
+            (int(p[0]), int(p[1]), int(p[2])) for p in receiver_positions
+        )
 
         self.backbone = UNONet(
             num_spatial_dims=3,
@@ -120,9 +139,13 @@ class CToTraceFNO3D(eqx.Module):
             depth=depth,
             key=fno_key,
         )
+        # Per-receiver MLP: features at receiver voxel (hidden,)
+        # → trace samples (n_timesteps,). Shared weights across
+        # receivers — so receivers are distinguished only by where
+        # they sit in the feature volume, which is what we want.
         self.head = eqx.nn.MLP(
             in_size=hidden_channels,
-            out_size=n_timesteps * n_receivers,
+            out_size=n_timesteps,
             width_size=max(hidden_channels * 2, 64),
             depth=2,
             key=head_key,
@@ -143,9 +166,21 @@ class CToTraceFNO3D(eqx.Module):
             ``(n_timesteps, n_receivers)`` trace tensor.
         """
         spike = _source_spike(self.grid_shape, src_pos_grid)
-        x = jnp.stack([c_norm, spike], axis=0)    # (2, D, H, W)
-        features = self.backbone(x)                    # (hidden_channels, D, H, W)
-        pooled = jnp.mean(features, axis=(1, 2, 3))  # (hidden_channels,)
-        flat = self.head(pooled)                  # (n_t * n_recv,)
-        scaled = self.output_scale * flat
-        return scaled.reshape(self.n_timesteps, self.n_receivers)
+        x = jnp.stack([c_norm, spike], axis=0)             # (2, D, H, W)
+        features = self.backbone(x)                        # (hidden, D, H, W)
+
+        # Point-sample features at each receiver voxel.
+        # rx, ry, rz are static int tuples — JIT-friendly indexing.
+        rx = jnp.array([p[0] for p in self.receiver_positions], dtype=jnp.int32)
+        ry = jnp.array([p[1] for p in self.receiver_positions], dtype=jnp.int32)
+        rz = jnp.array([p[2] for p in self.receiver_positions], dtype=jnp.int32)
+        # features shape (hidden, D, H, W). Index along (D, H, W) with
+        # advanced indexing → result shape (hidden, n_recv). Transpose
+        # to (n_recv, hidden) for the per-receiver MLP.
+        per_recv_feats = features[:, rx, ry, rz].T          # (n_recv, hidden)
+
+        # Apply the shared head per receiver. vmap over the receiver axis.
+        per_recv_traces = jax.vmap(self.head)(per_recv_feats)  # (n_recv, n_t)
+
+        scaled = self.output_scale * per_recv_traces.T      # (n_t, n_recv)
+        return scaled

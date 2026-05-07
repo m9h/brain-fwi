@@ -106,6 +106,14 @@ def _normalise_c(c: jnp.ndarray, c_min: float, c_max: float) -> jnp.ndarray:
     return (c - c_min) / (c_max - c_min)
 
 
+def _voxelise_positions(arr_or_metres: np.ndarray, dx: float) -> List[Tuple[int, int, int]]:
+    """Convert (N, 3) positions to integer voxel-coord tuples."""
+    arr = np.asarray(arr_or_metres)
+    if arr.dtype.kind == "f":
+        arr = np.round(arr / dx).astype(np.int32)
+    return [tuple(int(x) for x in row) for row in arr]
+
+
 def _extract_source_positions(reader_item) -> List[Tuple[int, int, int]]:
     """Pull integer source grid coords from a Phase-0 sample.
 
@@ -114,16 +122,34 @@ def _extract_source_positions(reader_item) -> List[Tuple[int, int, int]]:
     shard, so we can read the coords from the first sample.
     """
     if "transducer_positions_grid" in reader_item:
-        arr = np.asarray(reader_item["transducer_positions_grid"])
-    elif "transducer_positions" in reader_item and "dx" in reader_item:
-        positions_m = np.asarray(reader_item["transducer_positions"])
-        dx = float(reader_item["dx"])
-        arr = np.round(positions_m / dx).astype(np.int32)
-    else:
-        raise KeyError(
-            "sample lacks transducer_positions_grid or (transducer_positions + dx)"
+        return _voxelise_positions(
+            np.asarray(reader_item["transducer_positions_grid"]), dx=1.0,
         )
-    return [tuple(int(x) for x in row) for row in arr]
+    elif "transducer_positions" in reader_item and "dx" in reader_item:
+        return _voxelise_positions(
+            np.asarray(reader_item["transducer_positions"]),
+            float(reader_item["dx"]),
+        )
+    raise KeyError(
+        "sample lacks transducer_positions_grid or (transducer_positions + dx)"
+    )
+
+
+def _extract_receiver_positions(reader_item) -> List[Tuple[int, int, int]]:
+    """Pull integer receiver grid coords. Falls back to source positions
+    when the sample doesn't store sensor coords explicitly (the v2a
+    helmet uses the same array for emitters and receivers).
+    """
+    if "sensor_positions_grid" in reader_item:
+        return _voxelise_positions(
+            np.asarray(reader_item["sensor_positions_grid"]), dx=1.0,
+        )
+    if "sensor_positions" in reader_item and "dx" in reader_item:
+        return _voxelise_positions(
+            np.asarray(reader_item["sensor_positions"]),
+            float(reader_item["dx"]),
+        )
+    return _extract_source_positions(reader_item)
 
 
 def train_fno_surrogate(
