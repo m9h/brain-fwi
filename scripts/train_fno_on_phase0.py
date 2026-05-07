@@ -48,6 +48,13 @@ def main() -> int:
     ap.add_argument("--hidden-channels", type=int, default=32)
     ap.add_argument("--num-modes", type=int, default=12)
     ap.add_argument("--depth", type=int, default=2)
+    ap.add_argument(
+        "--n-timesteps", type=int, default=0,
+        help="Fix the FNO output time-axis length. 0 = infer from first "
+             "sample (legacy; may pad short samples with zeros — bad). "
+             "Recommended: set to min(observed_data.shape[1]) across the "
+             "dataset so the trainer always crops, never pads.",
+    )
     ap.add_argument("--held-out-fraction", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -82,6 +89,13 @@ def main() -> int:
     # d_true shape is (n_src, n_t, n_recv)
     grid_shape = c_voxel.shape
     n_t, n_recv = d_true.shape[1], d_true.shape[2]
+    if args.n_timesteps > 0:
+        if args.n_timesteps > n_t:
+            print(f"  WARNING: --n-timesteps={args.n_timesteps} > first sample "
+                  f"n_t={n_t}; trainer will pad short samples with zeros, "
+                  f"silently teaching FNO that late-time signal is zero. "
+                  f"Lower --n-timesteps to the dataset-wide min.")
+        n_t = int(args.n_timesteps)
 
     # Compute output scale (target.std() across dataset)
     # Sample up to 10 random training items to estimate std
