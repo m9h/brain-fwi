@@ -47,6 +47,8 @@ class ExperimentResult:
     skull_rmse: float
     loss_history: list[float]
     wall_time: float
+    dt: float = 0.0
+    n_t: int = 0
     status: str = "success"
 
     @property
@@ -55,6 +57,8 @@ class ExperimentResult:
         return {
             "brain_rmse": self.brain_rmse,
             "skull_rmse": self.skull_rmse,
+            "dt": self.dt,
+            "n_t": float(self.n_t),
         }
 
 def get_commit_hash() -> str:
@@ -175,17 +179,19 @@ def run_fwi_experiment(config: FWIConfig) -> ExperimentResult:
         brain_rmse=get_rmse(brain_mask),
         skull_rmse=get_rmse(skull_mask),
         loss_history=[float(l) for l in fwi_result.loss_history],
-        wall_time=time.time() - t0
+        wall_time=time.time() - t0,
+        dt=dt,
+        n_t=n_samples
     )
     return res
 
 def print_result(res: ExperimentResult):
-    print(f"RESULT|brain_rmse={res.brain_rmse:.4f}|skull_rmse={res.skull_rmse:.4f}|loss={res.loss_history[-1]:.6f}|time={res.wall_time:.1f}")
+    print(f"RESULT|brain_rmse={res.brain_rmse:.4f}|skull_rmse={res.skull_rmse:.4f}|loss={res.loss_history[-1]:.6f}|time={res.wall_time:.1f}|dt={res.dt:.4e}|nt={res.n_t}")
 
 def log_result(res: ExperimentResult):
     results_file = Path("results.tsv")
     header = not results_file.exists()
     with open(results_file, "a") as f:
         if header:
-            f.write("commit\tbrain_rmse\tskull_rmse\tfinal_loss\twall_time\tconfig\n")
-        f.write(f"{res.commit}\t{res.brain_rmse}\t{res.skull_rmse}\t{res.loss_history[-1]}\t{res.wall_time}\t{res.config}\n")
+            f.write("commit\tbrain_rmse\tskull_rmse\tfinal_loss\twall_time\tdt\tnt\tconfig\n")
+        f.write(f"{res.commit}\t{res.brain_rmse}\t{res.skull_rmse}\t{res.loss_history[-1]}\t{res.wall_time}\t{res.dt}\t{res.n_t}\t{res.config}\n")
