@@ -49,6 +49,14 @@ class ExperimentResult:
     wall_time: float
     status: str = "success"
 
+    @property
+    def metrics(self) -> dict[str, float]:
+        """Hallucination-protection for AgenticSciML agents."""
+        return {
+            "brain_rmse": self.brain_rmse,
+            "skull_rmse": self.skull_rmse,
+        }
+
 def get_commit_hash() -> str:
     try:
         import subprocess
