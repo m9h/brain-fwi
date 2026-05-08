@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-07-fno-cosine-best-skipgrad"
+CACHE_BUST = "2026-05-08-fno-grad-accumulation"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -86,6 +86,7 @@ def _train_body(
     c_max: float,
     lr_schedule: str,
     lr_alpha: float,
+    accumulation_steps: int,
     out_subdir: str,
 ):
     """Body of the training run, identical regardless of which GPU it runs on."""
@@ -128,6 +129,7 @@ def _train_body(
         args += ["--output-scale", str(output_scale)]
     args += ["--c-min", str(c_min), "--c-max", str(c_max)]
     args += ["--lr-schedule", lr_schedule, "--lr-alpha", str(lr_alpha)]
+    args += ["--accumulation-steps", str(accumulation_steps)]
     print(f"\nLaunching: {' '.join(args)}\n")
 
     t0 = time.time()
@@ -191,6 +193,7 @@ def main(
     c_max: float = 3200.0,
     lr_schedule: str = "cosine",    # "cosine" or "constant"
     lr_alpha: float = 0.01,         # cosine final/peak LR ratio
+    accumulation_steps: int = 1,    # gradient accumulation across N samples per step
     out_subdir: str = "default",    # subdir under output/{version}/ for per-ablation isolation
 ):
     print("=" * 64)
@@ -222,6 +225,7 @@ def main(
         output_scale=output_scale,
         c_min=c_min, c_max=c_max,
         lr_schedule=lr_schedule, lr_alpha=lr_alpha,
+        accumulation_steps=accumulation_steps,
         out_subdir=out_subdir,
     )
     print(f"\nDone in {result['wall_s']/60:.1f} min")

@@ -164,6 +164,7 @@ def train_fno_surrogate(
     lr_schedule: str = "cosine",
     lr_alpha: float = 0.01,
     lambda_spec: float = 0.3,
+    accumulation_steps: int = 1,
     source_positions: Optional[Sequence[Tuple[int, int, int]]] = None,
     held_out_ids: Optional[Sequence[str]] = None,
     log_every: int = 50,
@@ -228,30 +229,31 @@ def train_fno_surrogate(
             f"unknown lr_schedule {lr_schedule!r}; expected 'cosine' or 'constant'"
         )
 
+    if accumulation_steps < 1:
+        raise ValueError(
+            f"accumulation_steps must be >= 1, got {accumulation_steps}"
+        )
+
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     @eqx.filter_jit
-    def step(m, opt_state, c_norm, d_true):
+    def per_sample_grads(m, c_norm, d_true):
+        """Return (loss, grads) for one (c, d) pair without applying."""
         def loss_fn(m_):
             return surrogate_loss(m_, c_norm, d_true, source_positions, lambda_spec)
-        loss, grads = eqx.filter_value_and_grad(loss_fn)(m)
+        return eqx.filter_value_and_grad(loss_fn)(m)
+
+    @eqx.filter_jit
+    def apply_grads(m, opt_state, grads):
         updates, opt_state = optimizer.update(grads, opt_state)
         m = eqx.apply_updates(m, updates)
-        return m, opt_state, loss
+        return m, opt_state
 
-    losses: List[float] = []
-    best_loss = float("inf")
-    best_model = model
-    n_train = len(train_ids)
-    for s in range(n_steps):
-        key, subkey = jr.split(key)
-        idx = int(jr.randint(subkey, (), 0, n_train))
-        sample = reader[train_ids[idx]]
+    def _prep_sample(sample):
         c = jnp.asarray(sample["sound_speed_voxel"], dtype=jnp.float32)
         d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)
         c_norm = _normalise_c(c, c_min, c_max)
-
         # Phase-0 samples have variable trace length (each MIDA aug has
         # a slightly different max-c, hence a different CFL-derived dt
         # and n_timesteps). The FNO head has a fixed-size output, so we
@@ -266,12 +268,47 @@ def train_fno_surrogate(
                 dtype=d.dtype,
             )
             d = jnp.concatenate([d, pad], axis=1)
+        return c_norm, d
 
-        model, opt_state, loss = step(model, opt_state, c_norm, d)
-        loss_f = float(loss)
-        losses.append(loss_f)
-        if loss_f < best_loss:
-            best_loss = loss_f
+    losses: List[float] = []
+    best_loss = float("inf")
+    best_model = model
+    n_train = len(train_ids)
+    for s in range(n_steps):
+        # Accumulate grads across `accumulation_steps` independent samples
+        # before applying. Lower per-step gradient variance → smoother
+        # loss curve. Equivalent to a batch of size accumulation_steps
+        # but never materialises a batched-shape input (the FNO body
+        # expects single-sample c-fields).
+        accumulated_grads = None
+        accumulated_loss = 0.0
+        for _ in range(accumulation_steps):
+            key, subkey = jr.split(key)
+            idx = int(jr.randint(subkey, (), 0, n_train))
+            sample = reader[train_ids[idx]]
+            c_norm, d = _prep_sample(sample)
+            sample_loss, sample_grads = per_sample_grads(model, c_norm, d)
+            accumulated_loss += float(sample_loss)
+            if accumulated_grads is None:
+                accumulated_grads = sample_grads
+            else:
+                accumulated_grads = jax.tree.map(
+                    lambda a, b: a + b, accumulated_grads, sample_grads,
+                )
+
+        # Average grads across the accumulated samples (so effective LR
+        # matches a single-sample step at the same `learning_rate`).
+        if accumulation_steps > 1:
+            inv_n = 1.0 / float(accumulation_steps)
+            accumulated_grads = jax.tree.map(
+                lambda g: g * inv_n, accumulated_grads,
+            )
+        avg_loss = accumulated_loss / float(accumulation_steps)
+
+        model, opt_state = apply_grads(model, opt_state, accumulated_grads)
+        losses.append(avg_loss)
+        if avg_loss < best_loss:
+            best_loss = avg_loss
             best_model = model
         if verbose and (s + 1) % log_every == 0:
             recent = np.mean(losses[-log_every:])

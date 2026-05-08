@@ -466,6 +466,104 @@ class TestTrainerBestCheckpoint:
         )
 
 
+class TestTrainerGradientAccumulation:
+    """Accumulating gradients across N samples per Adam step should
+    behave like a larger batch: lower per-step variance, smoother loss
+    curve. Direct invariant we can check: ``accumulation_steps=N``
+    consumes N samples per logged step (so the inner loop reads
+    ``n_steps * N`` samples total)."""
+
+    def _tiny_model_and_reader(self, reader, first_sample, n_t):
+        from brain_fwi.surrogate.train import _extract_receiver_positions
+        c = np.asarray(first_sample["sound_speed_voxel"])
+        obs = np.asarray(first_sample["observed_data"])
+        rec_pos = _extract_receiver_positions(first_sample)
+        model = CToTraceFNO3D(
+            grid_shape=tuple(c.shape),
+            n_timesteps=n_t,
+            n_receivers=int(obs.shape[2]),
+            hidden_channels=8,
+            num_modes=4,
+            depth=1,
+            receiver_positions=rec_pos,
+            key=jr.PRNGKey(0),
+        )
+        first_two = list(reader.sample_ids)[:2]
+        access_count = {"n": 0}
+
+        class _Slice:
+            sample_ids = first_two
+            def __getitem__(self, sid):
+                access_count["n"] += 1
+                return reader[sid]
+            def __iter__(self):
+                return (reader[sid] for sid in first_two)
+
+        return model, _Slice(), access_count
+
+    def test_accumulation_consumes_n_samples_per_step(self, reader, first_sample, n_timesteps_distribution):
+        """With accumulation_steps=4 and n_steps=2, the per-step inner
+        loop should read 4*2=8 samples — proves accumulation is doing
+        real work and not collapsing to a single grad call."""
+        from brain_fwi.surrogate.train import (
+            train_fno_surrogate, _extract_source_positions,
+        )
+
+        n_t = min(n_timesteps_distribution)
+        model, slice_reader, access = self._tiny_model_and_reader(
+            reader, first_sample, n_t,
+        )
+        # Pass source_positions explicitly so we don't pollute the
+        # access counter with the trainer's setup-time read of sample[0].
+        src_pos = _extract_source_positions(first_sample)
+        access["n"] = 0  # reset after the setup read above
+
+        trained, losses = train_fno_surrogate(
+            model, slice_reader,
+            n_steps=2,
+            key=jr.PRNGKey(0),
+            learning_rate=1e-3,
+            accumulation_steps=4,
+            source_positions=src_pos,
+            log_every=99, verbose=False,
+        )
+        assert access["n"] == 8, (
+            f"accumulation_steps=4 × n_steps=2 should read 8 samples; "
+            f"got {access['n']}"
+        )
+        assert len(losses) == 2, (
+            f"loss history should have one entry per logical step (n_steps=2), "
+            f"got {len(losses)}"
+        )
+
+    def test_accumulation_default_is_one(self, reader, first_sample, n_timesteps_distribution):
+        """Backward compat: the default accumulation_steps should be 1
+        so existing call sites behave the same as before."""
+        from brain_fwi.surrogate.train import (
+            train_fno_surrogate, _extract_source_positions,
+        )
+
+        n_t = min(n_timesteps_distribution)
+        model, slice_reader, access = self._tiny_model_and_reader(
+            reader, first_sample, n_t,
+        )
+        src_pos = _extract_source_positions(first_sample)
+        access["n"] = 0
+
+        trained, losses = train_fno_surrogate(
+            model, slice_reader,
+            n_steps=2,
+            key=jr.PRNGKey(0),
+            learning_rate=1e-3,
+            source_positions=src_pos,
+            log_every=99, verbose=False,
+        )
+        assert access["n"] == 2, (
+            f"default accumulation_steps=1 means n_steps=2 reads 2 samples; "
+            f"got {access['n']} — accumulation default is leaking"
+        )
+
+
 class TestTrainerCosineSchedule:
     """A cosine schedule must actually reduce the LR over the training
     horizon — otherwise high-LR runs keep diverging."""
