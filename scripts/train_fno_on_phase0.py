@@ -91,12 +91,12 @@ def main() -> int:
              "the peak LR.",
     )
     ap.add_argument(
-        "--accumulation-steps", type=int, default=1,
-        help="Number of samples to accumulate gradients over before each "
-             "Adam step. >1 lowers per-step variance and smooths the loss "
-             "curve; equivalent to a batch of size N but without the "
-             "batched-input shape (FNO body still sees single c-fields). "
-             "Recommended starting point: 8.",
+        "--batch-size", type=int, default=1,
+        help="Gradient-accumulation count: number of samples to average "
+             "per Adam step. >1 lowers per-step variance and smooths the "
+             "loss curve; equivalent to a batch of size N but without "
+             "materialising a batched-input shape (FNO body still sees "
+             "single c-fields). Recommended starting point: 8.",
     )
     ap.add_argument(
         "--output-scale", type=float, default=0.0,
@@ -215,7 +215,7 @@ def main() -> int:
         lr_schedule=args.lr_schedule,
         lr_alpha=args.lr_alpha,
         lambda_spec=args.lambda_spec,
-        accumulation_steps=args.accumulation_steps,
+        batch_size=args.batch_size,
         c_min=args.c_min,
         c_max=args.c_max,
         held_out_ids=held_out_ids,

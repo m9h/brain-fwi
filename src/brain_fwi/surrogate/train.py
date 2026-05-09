@@ -164,20 +164,19 @@ def train_fno_surrogate(
     lr_schedule: str = "cosine",
     lr_alpha: float = 0.01,
     lambda_spec: float = 0.3,
-    accumulation_steps: int = 1,
+    batch_size: int = 1,
     source_positions: Optional[Sequence[Tuple[int, int, int]]] = None,
     held_out_ids: Optional[Sequence[str]] = None,
     log_every: int = 50,
     verbose: bool = True,
 ) -> Tuple[CToTraceFNO3D, List[float]]:
-    """Train ``model`` on the ``reader``'s samples.
+    """Train ``model`` on the ``reader``'s samples with gradient accumulation.
 
     Args:
         model: FNO surrogate to train (returned updated).
         reader: ``ShardedReader`` or any object with ``sample_ids``,
-            ``__getitem__``, and the expected field names. Must expose
-            ``sound_speed_voxel`` and ``observed_data`` per sample.
-        n_steps: number of gradient steps.
+            ``__getitem__``, and the expected field names.
+        n_steps: number of gradient updates to perform.
         key: PRNG key for sample selection.
         c_min, c_max: velocity-normalisation bounds.
         learning_rate: peak Adam LR; ``cosine`` decays to
@@ -189,12 +188,16 @@ def train_fno_surrogate(
         lr_alpha: cosine final/initial LR ratio. 0.01 → end at 1e-5
             when ``learning_rate=1e-3``.
         lambda_spec: spectral-loss weight.
-        source_positions: override the auto-extracted helmet. Use when
-            the reader does not expose transducer coords (e.g. tests).
-        held_out_ids: sample ids to exclude from training. The validation
-            half of the Phase-0 split goes here.
-        log_every: print a loss line every N steps.
+        source_positions: override the auto-extracted helmet.
+        held_out_ids: sample ids to exclude from training.
+        log_every: print a loss line every N updates.
         verbose: print progress.
+        batch_size: gradient-accumulation count. Sums per-sample
+            gradients across N samples before each Adam step. >1
+            lowers per-step variance and smooths the loss curve;
+            equivalent to a batch of size N without materialising a
+            batched-shape input (the FNO body still consumes single
+            c-fields per call).
 
     Returns:
         ``(best_model, loss_history)``. The first element is the model
@@ -210,8 +213,6 @@ def train_fno_surrogate(
     if not train_ids:
         raise ValueError("no training samples after filtering held-out ids")
 
-    # Resolve source positions from the first sample unless caller
-    # provided them explicitly.
     if source_positions is None:
         source_positions = _extract_source_positions(reader[train_ids[0]])
     source_positions = list(source_positions)
@@ -229,10 +230,8 @@ def train_fno_surrogate(
             f"unknown lr_schedule {lr_schedule!r}; expected 'cosine' or 'constant'"
         )
 
-    if accumulation_steps < 1:
-        raise ValueError(
-            f"accumulation_steps must be >= 1, got {accumulation_steps}"
-        )
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
@@ -275,14 +274,13 @@ def train_fno_surrogate(
     best_model = model
     n_train = len(train_ids)
     for s in range(n_steps):
-        # Accumulate grads across `accumulation_steps` independent samples
+        # Accumulate grads across `batch_size` independent samples
         # before applying. Lower per-step gradient variance → smoother
-        # loss curve. Equivalent to a batch of size accumulation_steps
-        # but never materialises a batched-shape input (the FNO body
-        # expects single-sample c-fields).
+        # loss curve. Equivalent to a batch of size batch_size but
+        # never materialises a batched-shape input.
         accumulated_grads = None
         accumulated_loss = 0.0
-        for _ in range(accumulation_steps):
+        for _ in range(batch_size):
             key, subkey = jr.split(key)
             idx = int(jr.randint(subkey, (), 0, n_train))
             sample = reader[train_ids[idx]]
@@ -298,12 +296,12 @@ def train_fno_surrogate(
 
         # Average grads across the accumulated samples (so effective LR
         # matches a single-sample step at the same `learning_rate`).
-        if accumulation_steps > 1:
-            inv_n = 1.0 / float(accumulation_steps)
+        if batch_size > 1:
+            inv_n = 1.0 / float(batch_size)
             accumulated_grads = jax.tree.map(
                 lambda g: g * inv_n, accumulated_grads,
             )
-        avg_loss = accumulated_loss / float(accumulation_steps)
+        avg_loss = accumulated_loss / float(batch_size)
 
         model, opt_state = apply_grads(model, opt_state, accumulated_grads)
         losses.append(avg_loss)

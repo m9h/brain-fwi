@@ -469,7 +469,7 @@ class TestTrainerBestCheckpoint:
 class TestTrainerGradientAccumulation:
     """Accumulating gradients across N samples per Adam step should
     behave like a larger batch: lower per-step variance, smoother loss
-    curve. Direct invariant we can check: ``accumulation_steps=N``
+    curve. Direct invariant we can check: ``batch_size=N``
     consumes N samples per logged step (so the inner loop reads
     ``n_steps * N`` samples total)."""
 
@@ -502,7 +502,7 @@ class TestTrainerGradientAccumulation:
         return model, _Slice(), access_count
 
     def test_accumulation_consumes_n_samples_per_step(self, reader, first_sample, n_timesteps_distribution):
-        """With accumulation_steps=4 and n_steps=2, the per-step inner
+        """With batch_size=4 and n_steps=2, the per-step inner
         loop should read 4*2=8 samples — proves accumulation is doing
         real work and not collapsing to a single grad call."""
         from brain_fwi.surrogate.train import (
@@ -523,12 +523,12 @@ class TestTrainerGradientAccumulation:
             n_steps=2,
             key=jr.PRNGKey(0),
             learning_rate=1e-3,
-            accumulation_steps=4,
+            batch_size=4,
             source_positions=src_pos,
             log_every=99, verbose=False,
         )
         assert access["n"] == 8, (
-            f"accumulation_steps=4 × n_steps=2 should read 8 samples; "
+            f"batch_size=4 × n_steps=2 should read 8 samples; "
             f"got {access['n']}"
         )
         assert len(losses) == 2, (
@@ -537,7 +537,7 @@ class TestTrainerGradientAccumulation:
         )
 
     def test_accumulation_default_is_one(self, reader, first_sample, n_timesteps_distribution):
-        """Backward compat: the default accumulation_steps should be 1
+        """Backward compat: the default batch_size should be 1
         so existing call sites behave the same as before."""
         from brain_fwi.surrogate.train import (
             train_fno_surrogate, _extract_source_positions,
@@ -559,7 +559,7 @@ class TestTrainerGradientAccumulation:
             log_every=99, verbose=False,
         )
         assert access["n"] == 2, (
-            f"default accumulation_steps=1 means n_steps=2 reads 2 samples; "
+            f"default batch_size=1 means n_steps=2 reads 2 samples; "
             f"got {access['n']} — accumulation default is leaking"
         )
 
