@@ -169,6 +169,7 @@ def train_fno_surrogate(
     held_out_ids: Optional[Sequence[str]] = None,
     log_every: int = 50,
     verbose: bool = True,
+    mesh: Optional[object] = None,
 ) -> Tuple[CToTraceFNO3D, List[float]]:
     """Train ``model`` on the ``reader``'s samples with gradient accumulation.
 
@@ -192,6 +193,14 @@ def train_fno_surrogate(
         held_out_ids: sample ids to exclude from training.
         log_every: print a loss line every N updates.
         verbose: print progress.
+        mesh: optional ``jax.sharding.Mesh`` over the ``'shots'`` axis.
+            When set, per-step forward/backward uses
+            :func:`brain_fwi.surrogate.parallel.shot_parallel_loss`
+            instead of the serial :func:`surrogate_loss`. Source axis
+            is sharded across mesh devices so each device handles
+            ``n_src / n_devices`` shots in parallel. Required for the
+            A100:4 production launcher; transparent on a 1-device mesh
+            (equivalence regression-tested).
         batch_size: gradient-accumulation count. Sums per-sample
             gradients across N samples before each Adam step. >1
             lowers per-step variance and smooths the loss curve;
@@ -236,12 +245,25 @@ def train_fno_surrogate(
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-    @eqx.filter_jit
-    def per_sample_grads(m, c_norm, d_true):
-        """Return (loss, grads) for one (c, d) pair without applying."""
-        def loss_fn(m_):
-            return surrogate_loss(m_, c_norm, d_true, source_positions, lambda_spec)
-        return eqx.filter_value_and_grad(loss_fn)(m)
+    if mesh is not None:
+        # Lazy import so the rest of the trainer doesn't pay the
+        # parallel module's import cost when running single-GPU.
+        from .parallel import shot_parallel_loss
+
+        @eqx.filter_jit
+        def per_sample_grads(m, c_norm, d_true):
+            def loss_fn(m_):
+                return shot_parallel_loss(
+                    m_, c_norm, d_true, source_positions, mesh, lambda_spec,
+                )
+            return eqx.filter_value_and_grad(loss_fn)(m)
+    else:
+        @eqx.filter_jit
+        def per_sample_grads(m, c_norm, d_true):
+            """Return (loss, grads) for one (c, d) pair without applying."""
+            def loss_fn(m_):
+                return surrogate_loss(m_, c_norm, d_true, source_positions, lambda_spec)
+            return eqx.filter_value_and_grad(loss_fn)(m)
 
     @eqx.filter_jit
     def apply_grads(m, opt_state, grads):

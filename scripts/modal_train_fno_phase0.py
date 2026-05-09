@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-08-fno-grad-accumulation"
+CACHE_BUST = "2026-05-09-fno-shot-parallel"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -87,6 +87,7 @@ def _train_body(
     lr_schedule: str,
     lr_alpha: float,
     batch_size: int,
+    n_shot_shards: int,
     out_subdir: str,
 ):
     """Body of the training run, identical regardless of which GPU it runs on."""
@@ -171,6 +172,28 @@ def train_h200(**kwargs):
     return _train_body(**kwargs)
 
 
+@app.function(
+    image=image,
+    gpu="A100:4",                    # 4× A100-80GB cluster, single host
+    timeout=3 * 60 * 60,             # phase4_production_hifi.md §4
+    memory=64 * 1024,                # higher RAM for 4-GPU coordination
+    volumes={
+        "/dataset": dataset_vol,
+        "/output": output_vol,
+    },
+    retries=2,
+)
+def train_a100x4(**kwargs):
+    """Shot-parallel training on a 4× A100 cluster.
+
+    Sets ``n_shot_shards=4`` by default so the trainer builds a 4-device
+    mesh and the helmet's 128 shots split 32-per-GPU. The c-field is
+    replicated; gradients sum across the mesh once per Adam step.
+    """
+    kwargs.setdefault("n_shot_shards", 4)
+    return _train_body(**kwargs)
+
+
 @app.local_entrypoint()
 def main(
     gpu: str = "H100",
@@ -194,6 +217,7 @@ def main(
     lr_schedule: str = "cosine",    # "cosine" or "constant"
     lr_alpha: float = 0.01,         # cosine final/peak LR ratio
     batch_size: int = 1,    # gradient accumulation across N samples per step
+    n_shot_shards: int = 0,         # 0 = auto from gpu (A100:4 -> 4, else 1)
     out_subdir: str = "default",    # subdir under output/{version}/ for per-ablation isolation
 ):
     print("=" * 64)
@@ -205,9 +229,18 @@ def main(
           f"{n_timesteps if n_timesteps > 0 else 'auto'}")
     print("=" * 64)
 
-    runner = {"H100": train_h100, "H200": train_h200}.get(gpu.upper())
+    # Auto-derive shot-shard count from the GPU topology if not set.
+    if n_shot_shards == 0:
+        n_shot_shards = 4 if gpu.upper() == "A100:4" else 1
+    runner = {
+        "H100": train_h100,
+        "H200": train_h200,
+        "A100:4": train_a100x4,
+    }.get(gpu.upper())
     if runner is None:
-        raise SystemExit(f"Unknown gpu={gpu!r}; use H100 or H200")
+        raise SystemExit(
+            f"Unknown gpu={gpu!r}; use H100, H200, or A100:4"
+        )
 
     result = runner.remote(
         version=version, phantom=phantom, grid_size=grid_size,
@@ -226,6 +259,7 @@ def main(
         c_min=c_min, c_max=c_max,
         lr_schedule=lr_schedule, lr_alpha=lr_alpha,
         batch_size=batch_size,
+        n_shot_shards=n_shot_shards,
         out_subdir=out_subdir,
     )
     print(f"\nDone in {result['wall_s']/60:.1f} min")

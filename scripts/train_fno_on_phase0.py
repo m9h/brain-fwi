@@ -99,6 +99,16 @@ def main() -> int:
              "single c-fields). Recommended starting point: 8.",
     )
     ap.add_argument(
+        "--n-shot-shards", type=int, default=1,
+        help="Shard the helmet's source axis across this many devices "
+             "via jax.sharding.Mesh + shard_map. 1 = serial scan over "
+             "shots (single-GPU). 4 = the A100:4 production launcher's "
+             "topology — each device runs n_src/4 shots in parallel "
+             "with rematerialised activations. Must divide n_src; for "
+             "the v2a 128-shot helmet, valid values are 1, 2, 4, 8, "
+             "16, 32, 64, 128.",
+    )
+    ap.add_argument(
         "--output-scale", type=float, default=0.0,
         help="Override the auto-estimated output scale. 0 = auto "
              "(mean d_true.std() across 10 samples). Try 1.0 to "
@@ -206,6 +216,13 @@ def main() -> int:
 
     # --- Train ----------------------------------------------------------
     t0 = time.time()
+    mesh = None
+    if args.n_shot_shards > 1:
+        from brain_fwi.surrogate.parallel import make_shot_mesh
+        mesh = make_shot_mesh(args.n_shot_shards)
+        print(f"  shot-parallel mesh: {args.n_shot_shards} devices "
+              f"on {mesh}")
+
     trained, losses = train_fno_surrogate(
         model,
         reader,
@@ -219,6 +236,7 @@ def main() -> int:
         c_min=args.c_min,
         c_max=args.c_max,
         held_out_ids=held_out_ids,
+        mesh=mesh,
         verbose=True,
     )
     train_time = time.time() - t0
