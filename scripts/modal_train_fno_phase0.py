@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-09-fno-shot-parallel"
+CACHE_BUST = "2026-05-09-fno-shot-parallel-fixflag"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -131,6 +131,7 @@ def _train_body(
     args += ["--c-min", str(c_min), "--c-max", str(c_max)]
     args += ["--lr-schedule", lr_schedule, "--lr-alpha", str(lr_alpha)]
     args += ["--batch-size", str(batch_size)]
+    args += ["--n-shot-shards", str(n_shot_shards)]
     print(f"\nLaunching: {' '.join(args)}\n")
 
     t0 = time.time()
