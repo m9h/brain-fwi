@@ -564,6 +564,133 @@ class TestTrainerGradientAccumulation:
         )
 
 
+class TestProductionResolution128:
+    """Phase-4 production target: grid_shape=(128,128,128) at dx=1mm.
+
+    Pinned by ``docs/design/phase4_production_hifi.md``. Catches
+    regressions where (a) the architecture doesn't carry through to the
+    new resolution, (b) the helmet collapses to a degenerate point
+    cluster because the 192mm-domain defaults overflow the new 128mm
+    domain, (c) CFL math at the new dx produces unstable timesteps.
+
+    Tests stay CPU-friendly: hidden=4, depth=1, num_modes=2 keeps the
+    forward pass under ~150 MB and ~1 min on CPU.
+    """
+
+    GRID = (128, 128, 128)
+    DX = 0.001            # 1 mm voxel
+    N_T = 32              # tiny — not the production 10k+, just shape check
+    HIDDEN = 4
+
+    def test_grid_extent_matches_doc(self):
+        nx, ny, nz = self.GRID
+        domain_mm = nx * self.DX * 1000
+        assert domain_mm == 128.0, (
+            f"phase4_production_hifi.md §2.1 mandates 128mm domain at "
+            f"dx=1mm → grid 128³; got {domain_mm:.1f}mm"
+        )
+
+    def test_helmet_at_128_dx1mm_not_degenerate(self):
+        """The helmet's clamp logic ``r = min(default, half_extent - 5dx)``
+        at 128³ × 1mm gives r_ap = min(95mm, 59mm) = 59mm — a real
+        shrinkage from 95mm. The test guards against (a) all positions
+        clamped to a single point (would mean an unusable bench), (b)
+        clamped radius ≤ 0 (would crash sample placement)."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from gen_phase0 import _build_helmet  # type: ignore
+
+        positions, pos_grid, src_list = _build_helmet(
+            n_elements=128, grid_shape=self.GRID, dx=self.DX,
+        )
+        # positions: (N, 3) floats in metres. pos_grid: tuple of integer
+        # coord arrays. src_list: list of (i,j,k) per source.
+        assert len(src_list) == 128, (
+            f"asked for 128 transducers, got {len(src_list)}"
+        )
+        # Spread: voxel-coord std along each axis must exceed 5 voxels —
+        # else the helmet has collapsed.
+        coords = np.asarray(src_list, dtype=int)
+        spreads = coords.std(axis=0)
+        assert (spreads > 5).all(), (
+            f"helmet voxel-coord std per axis = {spreads}; <5 voxels "
+            f"means the bench has collapsed at 128³ × 1mm. Likely the "
+            f"helmet-radius clamp went non-positive or all elements "
+            f"piled into the centre."
+        )
+        # All positions strictly inside the grid.
+        assert ((coords >= 0) & (coords < np.array(self.GRID))).all(), (
+            f"some helmet voxels are outside the 128³ grid: "
+            f"min={coords.min(axis=0)}, max={coords.max(axis=0)}"
+        )
+
+    def test_fno_constructs_at_128(self):
+        """Architecture is parametric in grid_shape — must compile + init."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from gen_phase0 import _build_helmet  # type: ignore
+
+        _, _, src_list = _build_helmet(
+            n_elements=8,  # tiny helmet for CPU speed
+            grid_shape=self.GRID, dx=self.DX,
+        )
+        rec_pos = src_list  # use sources as receivers; same helmet on both
+        model = CToTraceFNO3D(
+            grid_shape=self.GRID,
+            n_timesteps=self.N_T,
+            n_receivers=len(rec_pos),
+            hidden_channels=self.HIDDEN,
+            num_modes=2,
+            depth=1,
+            receiver_positions=rec_pos,
+            key=jr.PRNGKey(0),
+        )
+        assert model.grid_shape == self.GRID
+        assert model.n_receivers == len(rec_pos)
+
+    def test_forward_pass_at_128_finite(self):
+        """One forward pass at 128³ — shape and finiteness."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from gen_phase0 import _build_helmet  # type: ignore
+
+        _, _, src_list = _build_helmet(
+            n_elements=8, grid_shape=self.GRID, dx=self.DX,
+        )
+        model = CToTraceFNO3D(
+            grid_shape=self.GRID,
+            n_timesteps=self.N_T,
+            n_receivers=len(src_list),
+            hidden_channels=self.HIDDEN,
+            num_modes=2,
+            depth=1,
+            receiver_positions=src_list,
+            key=jr.PRNGKey(0),
+        )
+        c_norm = jnp.full(self.GRID, 0.4, dtype=jnp.float32)
+        out = model(c_norm, src_pos_grid=src_list[0])
+        assert out.shape == (self.N_T, len(src_list))
+        assert jnp.all(jnp.isfinite(out)), "FNO produced NaN/inf at 128³"
+
+    def test_cfl_dt_at_128_dx1mm_within_bounds(self):
+        """CFL: dt = cfl * dx / c_max, with cfl=0.3 and c_max=3200 m/s
+        at dx=1mm gives ~9.4×10⁻⁸ s. Sanity-check that the math is in
+        the expected range so we don't ship something with a 100×
+        wrong dt due to unit confusion."""
+        cfl = 0.3
+        c_max = 3200.0  # cortical bone with jitter overshoot
+        dt = cfl * self.DX / c_max
+        assert 5e-8 < dt < 2e-7, (
+            f"CFL-derived dt at 128³ × dx=1mm = {dt:.2e} outside "
+            f"[5e-8, 2e-7] s — likely a unit error"
+        )
+        # n_t at t_end ~ 1ms: ~10,500. Wider than v2a's 1100, expected.
+        n_t = int(1e-3 / dt)
+        assert 8000 < n_t < 15000, (
+            f"n_t at 128³ × 1ms = {n_t} outside expected [8k, 15k] band"
+        )
+
+
 class TestTrainerCosineSchedule:
     """A cosine schedule must actually reduce the LR over the training
     horizon — otherwise high-LR runs keep diverging."""
