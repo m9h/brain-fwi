@@ -74,7 +74,11 @@ from brain_fwi.phantoms.augment import (
     jittered_properties,
     random_deformation_warp,
 )
-from brain_fwi.phantoms.mida import make_mida_phantom
+from brain_fwi.phantoms.mida import (
+    MIDA_INTERNAL_AIR_LABELS,
+    make_mida_phantom,
+    mida_jittered_properties,
+)
 from brain_fwi.phantoms.properties import map_labels_to_all
 from brain_fwi.phantoms.synthetic import make_three_layer_head
 from brain_fwi.simulation.forward import (
@@ -114,7 +118,23 @@ def _build_phantom_labels(
         labels, _c, _rho, _alpha = make_mida_phantom(
             mida_path, grid_shape, dx, add_lesion=False, crop_cube=True,
         )
-        return np.asarray(labels).astype(np.int32)
+        labels = np.asarray(labels).astype(np.int32)
+        # Water-fill internal air cavities (sinuses, ear canal, oral cavity,
+        # etc. — labels 26-31, 85, 97). Otherwise the c=343 / rho=1.225 air
+        # voxels create a 4x sound-speed and 800x density discontinuity at
+        # the air-tissue boundary that destabilises the pseudospectral
+        # solver: the field exponentially blew up by ~6 orders of magnitude
+        # every 5 timesteps starting at t~30, NaN-cascading across the
+        # whole record by t=50 and leaving 99% of observed_data unusable.
+        # Anatomical air is correct but FWI-unfriendly; coupling-fluid /
+        # water-filled cavities are the standard FWI/USCT abstraction
+        # (Aubry 2022, Guasch 2020).
+        labels = np.where(
+            np.isin(labels, list(MIDA_INTERNAL_AIR_LABELS)),
+            50,  # MIDA "Background" label maps to water in mida_jittered_properties
+            labels,
+        )
+        return labels
     raise ValueError(f"Unknown phantom {phantom!r}; expected synthetic or mida")
 
 
@@ -177,23 +197,69 @@ def generate_sample(
     jax_key = jr.PRNGKey(subject_seed)
 
     base_labels = _build_phantom_labels(phantom, grid_shape, dx, mida_path)
+    # Smoothness rule used to be min(grid)/6 (=16 voxels at 96^3), which
+    # combined with the 2-voxel peak displacement made the warp a NN-
+    # rounding no-op: mean |disp| ~0.08 voxels, only ~1% of voxels above
+    # the 0.5-voxel rounding threshold, and zero label-boundary crossings.
+    # Empirically the warp produced byte-identical output across seeds.
+    # min(grid)/16 (=6 voxels at 96^3) keeps the deformation smooth on
+    # an anatomical scale (~12 mm at dx=2 mm) while letting the peak
+    # actually move voxels. Floor of 4 keeps it sane on tiny test grids.
     warped_labels = random_deformation_warp(
         base_labels, np_rng,
         max_displacement_voxels=deformation_voxels,
-        smoothness_voxels=max(8.0, min(grid_shape) / 6.0),
+        smoothness_voxels=max(4.0, min(grid_shape) / 16.0),
     )
+    if (warped_labels != base_labels).sum() == 0:
+        raise ValueError(
+            f"[{sample_id}] deformation warp produced zero label changes "
+            f"(peak={deformation_voxels}, sigma={max(4.0, min(grid_shape)/16.0):.1f}); "
+            f"augmentation pipeline is a no-op. Bump --deformation-voxels."
+        )
 
     jax_key, jkey_prop = jr.split(jax_key)
-    props = jittered_properties(
-        jnp.asarray(warped_labels), jkey_prop, intensity=jitter_intensity,
-    )
-    # Replace any air labels (label 0 in the synthetic phantom; MIDA labels
-    # 26-31 / 85 / 97 slip through this mask because they map via the "air"
-    # group into c=343 only if not caught here) with water coupling for
-    # USCT acquisition.
-    coupling_mask = jnp.asarray(warped_labels) == 0
-    sound_speed = jnp.where(coupling_mask, 1500.0, props["sound_speed"])
-    density = jnp.where(coupling_mask, 1000.0, props["density"])
+    if phantom == "mida":
+        # MIDA carries 116 distinct labels; the BrainWeb-keyed default
+        # in jittered_properties would clip everything >= 12 to label
+        # 11 (trabecular bone, ~2300 m/s), corrupting the entire c
+        # field. Use the MIDA-aware path which derives base values
+        # from MIDA_LABEL_TO_GROUP + MIDA_ACOUSTIC_PROPERTIES, so
+        # label 50 (background) → water, label 33 (cortical_bone) →
+        # 2800 m/s, etc. The air-cavity labels (26-31, 85, 97) keep
+        # c=343 m/s through the "air" group; USCT-coupling boundaries
+        # outside the head get water from the "water" group on
+        # label 50 directly, no extra masking needed.
+        props = mida_jittered_properties(
+            jnp.asarray(warped_labels), jkey_prop, intensity=jitter_intensity,
+        )
+    else:
+        props = jittered_properties(
+            jnp.asarray(warped_labels), jkey_prop, intensity=jitter_intensity,
+        )
+        # Synthetic phantom uses BrainWeb's label 0 for air/background;
+        # override to water-coupling for USCT acquisition.
+        coupling_mask = jnp.asarray(warped_labels) == 0
+        props["sound_speed"] = jnp.where(coupling_mask, 1500.0, props["sound_speed"])
+        props["density"] = jnp.where(coupling_mask, 1000.0, props["density"])
+    sound_speed = props["sound_speed"]
+    density = props["density"]
+
+    # Sanity-check c before paying ~4 min of forward sim per sample.
+    # The v1b run silently misrendered ~87% of voxels as trabecular bone
+    # (label-clip bug in jittered_properties); only a post-hoc histogram
+    # caught it after 1024 wasted samples. Empirical healthy MIDA-96^3
+    # across 8 seeds: water_frac in [34%, 45%], c_max in [3075, 3361];
+    # the v1b-bug pathway produced water_frac~8% and c_max~2600. The
+    # 20% / 2700 thresholds below give a clean separation either way.
+    water_frac = float(((sound_speed > 1490.0) & (sound_speed < 1510.0)).mean())
+    c_max = float(sound_speed.max())
+    if water_frac < 0.20 or c_max < 2700.0:
+        raise ValueError(
+            f"[{sample_id}] sound-speed field looks corrupted: "
+            f"water_frac={water_frac:.1%} (expect >=20%), "
+            f"c_max={c_max:.0f} m/s (expect >=2700). "
+            f"Likely a tissue-table or label-mapping bug."
+        )
 
     positions, pos_grid, src_list = _build_helmet(n_elements, grid_shape, dx)
     sensor_grid = pos_grid
@@ -292,7 +358,7 @@ def main() -> None:
     parser.add_argument("--n-subjects", type=int, default=1)
     parser.add_argument("--n-augments", type=int, default=4)
     parser.add_argument("--n-elements", type=int, default=64)
-    parser.add_argument("--deformation-voxels", type=float, default=2.0)
+    parser.add_argument("--deformation-voxels", type=float, default=6.0)
     parser.add_argument("--jitter-intensity", type=float, default=1.0)
     parser.add_argument("--siren-hidden", type=int, default=128)
     parser.add_argument("--siren-layers", type=int, default=3)
@@ -301,7 +367,24 @@ def main() -> None:
     parser.add_argument("--base-seed", type=int, default=0)
     parser.add_argument("--shard-size", type=int, default=1000)
     parser.add_argument("--version", type=str, default="phase0_v1")
+    # Range slicing for parallel generation across N workers.
+    # Each worker processes [aug_start, aug_end) of the global aug range.
+    # Sample IDs and seeds use the global aug index, so independent
+    # workers never produce overlapping samples and the resulting
+    # part-directories merge losslessly.
+    parser.add_argument("--aug-start", type=int, default=0,
+                        help="First aug index this worker handles (inclusive)")
+    parser.add_argument("--aug-end", type=int, default=None,
+                        help="Last aug index this worker handles (exclusive). "
+                             "Defaults to --n-augments.")
     args = parser.parse_args()
+    if args.aug_end is None:
+        args.aug_end = args.n_augments
+    if not (0 <= args.aug_start < args.aug_end <= args.n_augments):
+        raise SystemExit(
+            f"invalid aug range [{args.aug_start}, {args.aug_end}) "
+            f"for n_augments={args.n_augments}"
+        )
 
     n = args.grid_size
     grid_shape = (n, n, n)
@@ -340,7 +423,7 @@ def main() -> None:
     skipped = 0
 
     for subj in range(args.n_subjects):
-        for aug in range(args.n_augments):
+        for aug in range(args.aug_start, args.aug_end):
             sample_id = f"{args.phantom}_{subj:03d}_{aug:03d}"
             if writer.is_complete(sample_id):
                 skipped += 1

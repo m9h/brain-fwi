@@ -132,7 +132,7 @@ class UNOBlock(eqx.Module):
         out_channels: int,
         num_modes: Union[int, tuple[int, ...]],
         *,
-        activation: Callable = jax.nn.gelu,
+        activation: Callable = jax.nn.silu,
         key: jr.PRNGKey,
     ):
         sk, skipk = jr.split(key)

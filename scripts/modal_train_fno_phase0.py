@@ -1,40 +1,38 @@
-"""Modal runner: FNO surrogate training on the Phase-0 dataset.
+"""Modal runner: FNO surrogate training on the Phase-0 v2a dataset.
 
-The DGX Spark's unified-memory GB10 OOM'd at the default
-``(hidden_channels=32, num_modes=12, depth=2)`` architecture (job 1020,
-peak allocation 150 GiB). H100-80GB / H200-141GB on Modal have the
-headroom to actually train this size.
+Reads the v2a Phase-0 sharded dataset off the same ``brain-fwi-phase0``
+volume that the generation pipeline writes to — no extra upload step.
+H100-80GB / H200-141GB has the headroom to train the default
+``(hidden_channels=32, num_modes=12, depth=2)`` architecture, which the
+DGX Spark GB10 OOM'd on (peak 150 GiB).
 
-Two-step setup (run from a machine with the modal CLI configured)::
+Usage::
 
-    # 1. Upload the Phase-0 dataset (one-time, ~6.3 GB).
-    modal volume create brain-fwi-phase0-dataset
-    modal volume put brain-fwi-phase0-dataset \\
-        /data/datasets/brain-fwi/phase0_v1_mida_96 \\
-        /datasets/phase0_v1_mida_96
+    # Smoke (200 steps, ~$5):
+    modal run --detach scripts/modal_train_fno_phase0.py \\
+        --gpu H100 --version phase0_v2a --n-steps 200 \\
+        --hidden-channels 16 --num-modes 8 --depth 1
 
-    # 2. Volume for trained-surrogate output.
-    modal volume create brain-fwi-fno-output
-
-    # 3. Run.
-    modal run scripts/modal_train_fno_phase0.py \\
-        --gpu H100 --hidden-channels 32 --num-modes 12 --depth 2 \\
-        --n-steps 1000
+    # Production (1000 steps, ~$30-60 depending on GPU + arch):
+    modal run --detach scripts/modal_train_fno_phase0.py \\
+        --gpu H100 --version phase0_v2a --n-steps 1000 \\
+        --hidden-channels 32 --num-modes 12 --depth 2 \\
+        --n-timesteps 1100
 
 Pull the trained surrogate back::
 
-    modal volume get brain-fwi-fno-output /output ./fno_phase4_v1
+    modal volume get brain-fwi-fno-output /output ./fno_phase4_v2a
 
 Why H100 vs H200/B200:
 
-  - H100-80GB: enough headroom for hidden=16 / modes=12 / depth=2 OR
-    hidden=32 / modes=8 / depth=1. ~$3-4 / hr.
-  - H200-141GB: comfortably fits hidden=32 / modes=12 / depth=2 (the
-    full default). May need account-level access. ~$5 / hr.
-  - B200-192GB: overkill but available; useful if we go to 192^3 input.
+  - H100-80GB: enough for hidden=16/modes=12/depth=2 OR hidden=32/modes=8/depth=1.
+  - H200-141GB: comfortably fits hidden=32/modes=12/depth=2 (the full default).
+  - B200-192GB: overkill, useful if we go to 192^3 input.
 
-Defaults are sized for H100; pass ``--gpu H200`` and/or larger
-hyperparams if you want the production-scale architecture.
+Pass ``--n-timesteps`` to fix the FNO output time-axis. Phase-0 samples
+have variable n_t (CFL-derived dt depends on jittered c_max), so the
+trainer crops or pads each sample to ``model.n_timesteps``. Set to the
+dataset-wide min (~1100 for v2a at 96^3) so it always crops, never pads.
 """
 
 from __future__ import annotations
@@ -45,10 +43,11 @@ import modal
 
 app = modal.App("brain-fwi-fno-phase4")
 
-GIT_BRANCH = "main"
-CACHE_BUST = "2026-04-28-fno-train-v2-scan-remat"
+GIT_BRANCH = "feature/parallel-modal-phase0"
+CACHE_BUST = "2026-05-09-fno-shot-parallel-async-alloc"
 
-DATASET_VOL = "brain-fwi-phase0-dataset"
+# v2a lives on the same volume that gen_phase0 writes to.
+DATASET_VOL = "brain-fwi-phase0"
 OUTPUT_VOL = "brain-fwi-fno-output"
 
 image = (
@@ -68,6 +67,9 @@ output_vol = modal.Volume.from_name(OUTPUT_VOL, create_if_missing=True)
 
 
 def _train_body(
+    version: str,
+    phantom: str,
+    grid_size: int,
     hidden_channels: int,
     num_modes: int,
     depth: int,
@@ -75,15 +77,31 @@ def _train_body(
     learning_rate: float,
     lambda_spec: float,
     held_out_fraction: float,
+    n_timesteps: int,
+    skip_validation: bool,
+    skip_gradient_accuracy: bool,
+    n_grad_samples: int,
+    output_scale: float,
+    c_min: float,
+    c_max: float,
+    lr_schedule: str,
+    lr_alpha: float,
+    batch_size: int,
+    n_shot_shards: int,
+    out_subdir: str,
 ):
     """Body of the training run, identical regardless of which GPU it runs on."""
     import os
     import subprocess
-    import sys
 
     os.environ["JAX_PLATFORMS"] = "cuda"
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.85"
+    # Async allocator avoids the fragmentation-induced 15GB OOM we hit
+    # on A100:4 smoke #3 — even with smoke-arch activations totalling
+    # ~2GB, BFC's default chunk strategy was failing to find contiguous
+    # blocks. Per JAX's own runtime warning.
+    os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
 
     subprocess.run(["nvidia-smi", "-L"], check=True)
     subprocess.run(
@@ -91,10 +109,13 @@ def _train_body(
          "--format=csv,noheader"], check=True,
     )
 
+    data_path = f"/dataset/output/{version}_{phantom}_{grid_size}/merged"
+    out_path = f"/output/{version}_{phantom}_{grid_size}/{out_subdir}/fno_surrogate"
+
     args = [
         "python", "-u", "/opt/brain-fwi/scripts/train_fno_on_phase0.py",
-        "--data", "/dataset/datasets/phase0_v1_mida_96",
-        "--out", "/output/fno_surrogate",
+        "--data", data_path,
+        "--out", out_path,
         "--n-steps", str(n_steps),
         "--learning-rate", str(learning_rate),
         "--lambda-spec", str(lambda_spec),
@@ -103,6 +124,19 @@ def _train_body(
         "--depth", str(depth),
         "--held-out-fraction", str(held_out_fraction),
     ]
+    if n_timesteps > 0:
+        args += ["--n-timesteps", str(n_timesteps)]
+    if skip_validation:
+        args += ["--skip-validation"]
+    if skip_gradient_accuracy:
+        args += ["--skip-gradient-accuracy"]
+    args += ["--n-grad-samples", str(n_grad_samples)]
+    if output_scale > 0:
+        args += ["--output-scale", str(output_scale)]
+    args += ["--c-min", str(c_min), "--c-max", str(c_max)]
+    args += ["--lr-schedule", lr_schedule, "--lr-alpha", str(lr_alpha)]
+    args += ["--batch-size", str(batch_size)]
+    args += ["--n-shot-shards", str(n_shot_shards)]
     print(f"\nLaunching: {' '.join(args)}\n")
 
     t0 = time.time()
@@ -123,6 +157,7 @@ def _train_body(
         "/dataset": dataset_vol,
         "/output": output_vol,
     },
+    retries=2,
 )
 def train_h100(**kwargs):
     return _train_body(**kwargs)
@@ -137,14 +172,40 @@ def train_h100(**kwargs):
         "/dataset": dataset_vol,
         "/output": output_vol,
     },
+    retries=2,
 )
 def train_h200(**kwargs):
+    return _train_body(**kwargs)
+
+
+@app.function(
+    image=image,
+    gpu="A100:4",                    # 4× A100-80GB cluster, single host
+    timeout=3 * 60 * 60,             # phase4_production_hifi.md §4
+    memory=64 * 1024,                # higher RAM for 4-GPU coordination
+    volumes={
+        "/dataset": dataset_vol,
+        "/output": output_vol,
+    },
+    retries=2,
+)
+def train_a100x4(**kwargs):
+    """Shot-parallel training on a 4× A100 cluster.
+
+    Sets ``n_shot_shards=4`` by default so the trainer builds a 4-device
+    mesh and the helmet's 128 shots split 32-per-GPU. The c-field is
+    replicated; gradients sum across the mesh once per Adam step.
+    """
+    kwargs.setdefault("n_shot_shards", 4)
     return _train_body(**kwargs)
 
 
 @app.local_entrypoint()
 def main(
     gpu: str = "H100",
+    version: str = "phase0_v2a",
+    phantom: str = "mida",
+    grid_size: int = 96,
     hidden_channels: int = 32,
     num_modes: int = 12,
     depth: int = 2,
@@ -152,19 +213,43 @@ def main(
     learning_rate: float = 1e-3,
     lambda_spec: float = 0.3,
     held_out_fraction: float = 0.2,
+    n_timesteps: int = 0,           # 0 = infer from first sample
+    skip_validation: bool = False,  # smoke: bypass §7.2/§7.3 gates
+    skip_gradient_accuracy: bool = False,  # surgical: skip just §7.3 (OOM-prone)
+    n_grad_samples: int = 20,       # cap gradient-accuracy sample count
+    output_scale: float = 0.0,      # 0 = auto-estimate from data std
+    c_min: float = 1400.0,          # c-field [c_min, c_max] -> [0, 1]
+    c_max: float = 3200.0,
+    lr_schedule: str = "cosine",    # "cosine" or "constant"
+    lr_alpha: float = 0.01,         # cosine final/peak LR ratio
+    batch_size: int = 1,    # gradient accumulation across N samples per step
+    n_shot_shards: int = 0,         # 0 = auto from gpu (A100:4 -> 4, else 1)
+    out_subdir: str = "default",    # subdir under output/{version}/ for per-ablation isolation
 ):
     print("=" * 64)
     print(f"  FNO surrogate training on Modal {gpu}")
+    print(f"  Dataset: {version}_{phantom}_{grid_size}")
     print(f"  Arch: hidden={hidden_channels}, modes={num_modes}, depth={depth}")
     print(f"  Steps: {n_steps}, LR: {learning_rate}, λ_spec: {lambda_spec}")
-    print(f"  Held out: {held_out_fraction*100:.0f}%")
+    print(f"  Held out: {held_out_fraction*100:.0f}%, n_timesteps: "
+          f"{n_timesteps if n_timesteps > 0 else 'auto'}")
     print("=" * 64)
 
-    runner = {"H100": train_h100, "H200": train_h200}.get(gpu.upper())
+    # Auto-derive shot-shard count from the GPU topology if not set.
+    if n_shot_shards == 0:
+        n_shot_shards = 4 if gpu.upper() == "A100:4" else 1
+    runner = {
+        "H100": train_h100,
+        "H200": train_h200,
+        "A100:4": train_a100x4,
+    }.get(gpu.upper())
     if runner is None:
-        raise SystemExit(f"Unknown gpu={gpu!r}; use H100 or H200")
+        raise SystemExit(
+            f"Unknown gpu={gpu!r}; use H100, H200, or A100:4"
+        )
 
     result = runner.remote(
+        version=version, phantom=phantom, grid_size=grid_size,
         hidden_channels=hidden_channels,
         num_modes=num_modes,
         depth=depth,
@@ -172,6 +257,17 @@ def main(
         learning_rate=learning_rate,
         lambda_spec=lambda_spec,
         held_out_fraction=held_out_fraction,
+        n_timesteps=n_timesteps,
+        skip_validation=skip_validation,
+        skip_gradient_accuracy=skip_gradient_accuracy,
+        n_grad_samples=n_grad_samples,
+        output_scale=output_scale,
+        c_min=c_min, c_max=c_max,
+        lr_schedule=lr_schedule, lr_alpha=lr_alpha,
+        batch_size=batch_size,
+        n_shot_shards=n_shot_shards,
+        out_subdir=out_subdir,
     )
     print(f"\nDone in {result['wall_s']/60:.1f} min")
-    print(f"Pull results: modal volume get {OUTPUT_VOL} /output ./fno_phase4_v1")
+    print(f"Pull results: modal volume get {OUTPUT_VOL} "
+          f"/output/{version}_{phantom}_{grid_size} ./fno_phase4_{version}")
