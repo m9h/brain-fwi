@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-09-fno-shot-parallel-vmap"
+CACHE_BUST = "2026-05-09-fno-shot-parallel-async-alloc"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"
@@ -97,6 +97,11 @@ def _train_body(
     os.environ["JAX_PLATFORMS"] = "cuda"
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.85"
+    # Async allocator avoids the fragmentation-induced 15GB OOM we hit
+    # on A100:4 smoke #3 — even with smoke-arch activations totalling
+    # ~2GB, BFC's default chunk strategy was failing to find contiguous
+    # blocks. Per JAX's own runtime warning.
+    os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
 
     subprocess.run(["nvidia-smi", "-L"], check=True)
     subprocess.run(
