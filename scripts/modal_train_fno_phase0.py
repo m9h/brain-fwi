@@ -44,7 +44,7 @@ import modal
 app = modal.App("brain-fwi-fno-phase4")
 
 GIT_BRANCH = "feature/parallel-modal-phase0"
-CACHE_BUST = "2026-05-09-fno-shot-parallel-fixflag"
+CACHE_BUST = "2026-05-09-fno-shot-parallel-vmap"
 
 # v2a lives on the same volume that gen_phase0 writes to.
 DATASET_VOL = "brain-fwi-phase0"

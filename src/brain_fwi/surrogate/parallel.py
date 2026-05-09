@@ -102,19 +102,16 @@ def shot_parallel_loss(
             pred = model(c_norm, (src_xyz[0], src_xyz[1], src_xyz[2]))
             return _rel_l2(pred, target), _spectral_rel_l2(pred, target)
 
-        def body(carry, xs):
-            sx, tg = xs
-            t_loss, s_loss = _per_shot(sx, tg)
-            return (carry[0] + t_loss, carry[1] + s_loss), None
-
-        # JAX 0.9 shard_map requires the scan carry to declare its
-        # mesh-axis variance via pcast. Inputs sharded along 'shots'
-        # produce per-shard losses that vary along that axis.
-        zero = jax.lax.pcast(jnp.zeros(()), ("shots",), to="varying")
-        (t_sum, s_sum), _ = jax.lax.scan(
-            body, (zero, zero), (src_local, target_local),
-        )
-        # All-reduce across mesh so every device returns the global sum.
+        # Use vmap(checkpoint(per_shot)) instead of scan+checkpoint here:
+        # JAX 0.9 shard_map + lax.scan requires the carry to declare
+        # mesh-axis variance via pcast, which produces an Auto-typed
+        # tensor that clashes with shard_map's Manual context. vmapping
+        # the @jax.checkpoint-decorated per-shot function gives the
+        # same memory profile (each shot's forward is rematerialised
+        # one at a time during backward) without the carry headache.
+        t_per, s_per = jax.vmap(_per_shot)(src_local, target_local)
+        t_sum = jnp.sum(t_per)
+        s_sum = jnp.sum(s_per)
         return (
             jax.lax.psum(t_sum, axis_name="shots"),
             jax.lax.psum(s_sum, axis_name="shots"),
