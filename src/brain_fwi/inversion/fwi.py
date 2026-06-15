@@ -98,6 +98,9 @@ class FWIConfig:
     skip_bandpass: bool = False
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
+    optimizer: str = "sgd"  # "sgd" (Stride-style w/ max-norm grad) or "adam"
+    tv_weight: float = 0.0  # Total Variation regularisation weight (0 = off)
+    tv_weight_schedule: Optional[List[float]] = None  # Per-band TV weight; overrides tv_weight when set
     verbose: bool = True
 
     # --- Parameterisation ---
@@ -255,6 +258,27 @@ def _load_checkpoint(path: Path, expected_grid_shape=None):
 # ---------------------------------------------------------------------------
 # Gradient smoothing
 # ---------------------------------------------------------------------------
+
+def _tv_penalty(c: jnp.ndarray, eps: float = 1e-6) -> jnp.ndarray:
+    """Smoothed isotropic Total Variation penalty for 2D/3D fields.
+
+    Sum over interior of sqrt((∂c/∂x)² + (∂c/∂y)² [+ (∂c/∂z)²] + eps²).
+    The eps²-smoothing keeps the gradient finite at constant regions.
+    """
+    if c.ndim == 2:
+        dx = jnp.diff(c, axis=0)[:, :-1]
+        dy = jnp.diff(c, axis=1)[:-1, :]
+        return jnp.sum(jnp.sqrt(dx * dx + dy * dy + eps * eps))
+    if c.ndim == 3:
+        dx = jnp.diff(c, axis=0)[:, :-1, :-1]
+        dy = jnp.diff(c, axis=1)[:-1, :, :-1]
+        dz = jnp.diff(c, axis=2)[:-1, :-1, :]
+        return jnp.sum(jnp.sqrt(dx * dx + dy * dy + dz * dz + eps * eps))
+    raise ValueError(f"TV penalty supports 2D/3D only; got ndim={c.ndim}")
+
+
+_tv_grad = jax.grad(_tv_penalty)
+
 
 def _smooth_gradient(
     grad: jnp.ndarray,
@@ -453,7 +477,14 @@ def run_fwi(
     # Steepest descent with gradient normalisation (Stride-style).
     # Combined with max_step_m_per_s, the learning rate directly controls
     # the maximum velocity change per iteration in m/s.
-    optimizer = optax.sgd(config.learning_rate)
+    if config.optimizer == "adam":
+        optimizer = optax.adam(config.learning_rate)
+    elif config.optimizer == "sgd":
+        optimizer = optax.sgd(config.learning_rate)
+    else:
+        raise ValueError(
+            f"Unknown optimizer {config.optimizer!r}; expected 'sgd' or 'adam'."
+        )
     opt_state = optimizer.init(params)
 
     loss_history = []
@@ -493,9 +524,14 @@ def run_fwi(
         if band_idx < start_band:
             continue
 
+        if config.tv_weight_schedule is not None:
+            current_tv_weight = float(config.tv_weight_schedule[band_idx])
+        else:
+            current_tv_weight = float(config.tv_weight)
+
         if config.verbose:
             print(f"\n  Band {band_idx+1}/{len(config.freq_bands)}: "
-                  f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz")
+                  f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz, TV weight={current_tv_weight:.2f}")
 
         # Bandpass the source signal and observed data for this frequency band
         if config.skip_bandpass:
@@ -569,11 +605,22 @@ def run_fwi(
             if config.mask is not None:
                 grad = grad * config.mask
 
-            # Normalise gradient by max magnitude so that the optimizer
+            # Normalise data gradient by max magnitude so the optimizer
             # learning rate directly controls max velocity change in m/s.
             # With SGD(lr=50): max update = 50 m/s per iteration.
             grad_max = jnp.max(jnp.abs(grad))
             grad = grad / (grad_max + 1e-30)
+
+            # Total Variation regularisation: penalise high-frequency
+            # oscillations. Normalised separately and added with weight
+            # so that tv_weight is interpretable as "TV step magnitude
+            # relative to data step magnitude" — tv_weight=1 means TV
+            # contributes equally to the update direction.
+            if current_tv_weight > 0:
+                tv_g = _tv_grad(params)
+                tv_max = jnp.max(jnp.abs(tv_g))
+                tv_g_norm = tv_g / (tv_max + 1e-30)
+                grad = grad + current_tv_weight * tv_g_norm
 
             # Optimizer update + clip to physical bounds
             updates, opt_state = optimizer.update(grad, opt_state, params)
