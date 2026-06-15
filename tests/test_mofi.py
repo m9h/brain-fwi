@@ -449,7 +449,7 @@ def test_mofi_alignment_unblocks_fwi():
             freq_bands=[(40e3, 90e3), (90e3, 160e3)], n_iters_per_band=15,
             shots_per_iter=4, learning_rate=30.0, c_min=1400.0, c_max=2800.0,
             pml_size=pml, gradient_smooth_sigma=1.0, loss_fn="l2",
-            optimizer="sgd", mask=interior, verbose=False)
+            mask=interior, verbose=False)  # sgd is the base default
         return run_fwi(observed_data=observed, initial_velocity=c_init, density=rho,
                        dx=dx, src_positions_grid=src, sensor_positions_grid=pg,
                        source_signal=sig, dt=dt, t_end=t_end, config=cfg).velocity
