@@ -36,7 +36,7 @@ from ..simulation.forward import (
     simulate_shot_sensors,
     _build_source_signal,
 )
-from .losses import l2_loss, envelope_loss, multiscale_loss
+from .losses import l2_loss, envelope_loss, multiscale_loss, awi_loss
 from .param_field import (
     ParameterField,
     SIRENField,
@@ -71,7 +71,9 @@ class FWIConfig:
         cfl: CFL stability number.
         gradient_smooth_sigma: Gaussian smoothing sigma for gradients
             (in grid points). 0 = no smoothing.
-        loss_fn: Loss function name ('l2', 'envelope', 'multiscale').
+        loss_fn: Loss function name ('l2', 'envelope', 'multiscale', 'awi').
+            'awi' (adaptive waveform inversion) has the widest basin of
+            attraction — use it for skull/poor-start cycle-skip robustness.
         envelope_weight: Weight for envelope term in multiscale loss.
         mask: Optional binary mask for inversion region.
             Gradients outside mask are zeroed. Use (labels > 0) to
@@ -348,8 +350,11 @@ def _get_loss_fn(name: str, envelope_weight: float) -> Callable:
         return envelope_loss
     elif name == "multiscale":
         return lambda p, o: multiscale_loss(p, o, envelope_weight)
+    elif name == "awi":
+        return awi_loss
     else:
-        raise ValueError(f"Unknown loss: {name!r}. Use 'l2', 'envelope', or 'multiscale'.")
+        raise ValueError(
+            f"Unknown loss: {name!r}. Use 'l2', 'envelope', 'multiscale', or 'awi'.")
 
 
 def _bandpass_signal(signal: jnp.ndarray, dt: float, fmin: float, fmax: float) -> jnp.ndarray:

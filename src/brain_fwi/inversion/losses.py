@@ -4,10 +4,14 @@ Provides:
   - l2_loss: Standard L2 waveform difference (Stride default)
   - envelope_loss: Hilbert envelope matching (j-Wave FWI notebook)
   - multiscale_loss: Frequency-weighted combination
+  - awi_loss: Adaptive Waveform Inversion (Warner & Guasch 2016)
 
 The envelope loss is more robust to cycle-skipping artifacts at low
 frequencies, which is critical for transcranial imaging where skull
-heterogeneity creates large phase errors.
+heterogeneity creates large phase errors. AWI goes further: it has a
+much wider basin of attraction (it is the objective behind the
+successful in-silico brain FWI of Guasch et al. 2020), and is the
+missing ingredient behind the plain-L2 skull cycle-skip.
 """
 
 import jax
@@ -77,6 +81,78 @@ def multiscale_loss(
     l2 = l2_loss(predicted, observed)
     env = envelope_loss(predicted, observed)
     return (1.0 - envelope_weight) * l2 + envelope_weight * env
+
+
+def _awi_matching_filter(predicted, observed, filter_half_len=64, eps=1e-2):
+    """Limited-length least-squares (Wiener) matching filter for ONE trace.
+
+    Solves for ``w`` (supported on lags [-L, L], L = filter_half_len) that
+    minimises ``|| conv(w, predicted) - observed ||²`` via the normal
+    equations (AᵀA + εI) w = Aᵀ observed, where A is the banded convolution
+    matrix of ``predicted``. The LIMITED length is essential: a full-length
+    filter can deconvolve predicted→observed exactly, which makes the FWI
+    velocity gradient ill-conditioned/uninformative (the earlier full-FFT
+    variant underperformed plain L2 on skull recovery). A short filter
+    forces the misfit to localise as a genuine time lag.
+
+    Returns ``(w, lags)`` with ``lags = -L .. L``. Differentiable end to end
+    (the linear solve included), so ``jax.grad`` yields the AWI adjoint.
+    """
+    nt = predicted.shape[0]
+    L = int(min(filter_half_len, nt // 2 - 1))
+    M = 2 * L + 1
+    t = jnp.arange(nt)[:, None]
+    j = jnp.arange(M)[None, :]
+    idx = t - j + L                              # conv(w,p)[t] = Σ_j w[j]·p[t-j+L]
+    valid = (idx >= 0) & (idx < nt)
+    A = jnp.where(valid, predicted[jnp.clip(idx, 0, nt - 1)], 0.0)  # (nt, M)
+    AtA = A.T @ A
+    Atd = A.T @ observed
+    reg = eps * (jnp.trace(AtA) / M + 1e-30)
+    w = jnp.linalg.solve(AtA + reg * jnp.eye(M), Atd)
+    return w, jnp.arange(-L, L + 1)
+
+
+def awi_loss(
+    predicted: jnp.ndarray,
+    observed: jnp.ndarray,
+    filter_half_len: int = 64,
+    eps: float = 1e-2,
+) -> jnp.ndarray:
+    """Adaptive Waveform Inversion misfit (Warner & Guasch 2016).
+
+    Per trace, find the LIMITED-length Wiener matching filter ``w`` that maps
+    predicted onto observed (see :func:`_awi_matching_filter`), then penalise
+    its energy away from zero lag:
+
+        J = 0.5 * mean_traces  Σ_τ (τ·w(τ))²  /  Σ_τ w(τ)²
+
+    A cycle-skipped misalignment of k samples drives w to a spike at lag k,
+    so J ≈ 0.5·k² — a single wide basin in the time shift with NO spurious
+    local minima at whole-cycle offsets (where plain L2 cycle-skips).
+    Differentiable, so ``jax.grad`` yields the adjoint source automatically.
+
+    Args:
+        predicted: (n_timesteps, n_sensors) or (n_timesteps,) simulated data.
+        observed: Same shape.
+        filter_half_len: matching-filter half-length L (lags ±L). Must cover
+            the largest expected time shift; kept short for a well-conditioned
+            velocity gradient.
+        eps: Tikhonov regularisation on the normal equations (relative to the
+            mean diagonal), for stability on low-energy/noisy traces.
+
+    Returns:
+        Scalar AWI loss (minimised at alignment).
+    """
+    def per_trace(p, d):
+        w, lags = _awi_matching_filter(p, d, filter_half_len, eps)
+        tau = lags.astype(w.dtype)
+        return jnp.sum((tau * w) ** 2) / (jnp.sum(w ** 2) + 1e-30)
+
+    if predicted.ndim == 1:
+        return 0.5 * per_trace(predicted, observed)
+    Js = jax.vmap(per_trace, in_axes=(1, 1))(predicted, observed)
+    return 0.5 * jnp.mean(Js)
 
 
 def _hilbert_envelope(x: jnp.ndarray) -> jnp.ndarray:
