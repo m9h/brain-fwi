@@ -4,10 +4,14 @@ Provides:
   - l2_loss: Standard L2 waveform difference (Stride default)
   - envelope_loss: Hilbert envelope matching (j-Wave FWI notebook)
   - multiscale_loss: Frequency-weighted combination
+  - awi_loss: Adaptive Waveform Inversion (Warner & Guasch 2016)
 
 The envelope loss is more robust to cycle-skipping artifacts at low
 frequencies, which is critical for transcranial imaging where skull
-heterogeneity creates large phase errors.
+heterogeneity creates large phase errors. AWI goes further: it has a
+much wider basin of attraction (it is the objective behind the
+successful in-silico brain FWI of Guasch et al. 2020), and is the
+missing ingredient behind the plain-L2 skull cycle-skip.
 """
 
 import jax
@@ -77,6 +81,56 @@ def multiscale_loss(
     l2 = l2_loss(predicted, observed)
     env = envelope_loss(predicted, observed)
     return (1.0 - envelope_weight) * l2 + envelope_weight * env
+
+
+def awi_loss(
+    predicted: jnp.ndarray,
+    observed: jnp.ndarray,
+    eps: float = 1e-2,
+) -> jnp.ndarray:
+    """Adaptive Waveform Inversion misfit (Warner & Guasch 2016).
+
+    Rather than the raw residual, AWI finds — per trace — the Wiener
+    matching filter ``w`` that maps the predicted trace onto the observed
+    trace, and penalises the filter for energy away from zero lag:
+
+        J = 0.5 * mean_traces  Σ_τ (τ·w(τ))²  /  Σ_τ w(τ)²
+
+    When predicted matches observed (up to scaling) the optimal filter is
+    a spike at zero lag and J → 0. A cycle-skipped misalignment of k
+    samples drives w to a spike at lag k, so J ≈ 0.5·k² — a single, wide
+    basin in the time shift, with NO spurious local minima at whole-cycle
+    offsets (where plain L2 cycle-skips). This is what lets FWI climb the
+    high-contrast skull from a poor starting model.
+
+    The matching filter is computed by frequency-domain (regularised
+    Wiener) deconvolution, so the whole objective is differentiable and
+    ``jax.grad`` yields the adjoint source automatically — no hand-derived
+    AWI adjoint needed (the j-Wave/JAX advantage).
+
+    Args:
+        predicted: (n_timesteps, n_sensors) simulated data.
+        observed: Same shape.
+        eps: Wiener regularisation, relative to each trace's peak power
+            spectral density. Larger = smoother filter, more stable on
+            low-energy or noisy traces.
+
+    Returns:
+        Scalar AWI loss (minimised at alignment).
+    """
+    nt = predicted.shape[0]
+    P = jnp.fft.fft(predicted, axis=0)
+    D = jnp.fft.fft(observed, axis=0)
+    power = jnp.abs(P) ** 2
+    reg = eps * jnp.max(power, axis=0, keepdims=True)
+    # Wiener matching filter: w ⋆ predicted ≈ observed.
+    W = jnp.conj(P) * D / (power + reg + 1e-30)
+    w = jnp.real(jnp.fft.ifft(W, axis=0))            # (nt, n_sensors)
+    # Signed lags in samples, zero-centred in FFT order (0,1,..,-2,-1).
+    tau = (jnp.fft.fftfreq(nt) * nt)[:, jnp.newaxis]
+    num = jnp.sum((tau * w) ** 2, axis=0)            # penalised filter energy
+    den = jnp.sum(w ** 2, axis=0) + 1e-30            # total filter energy
+    return 0.5 * jnp.mean(num / den)
 
 
 def _hilbert_envelope(x: jnp.ndarray) -> jnp.ndarray:
