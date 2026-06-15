@@ -4,6 +4,17 @@
 **Author:** drafted 2026-06-15
 **Motivates:** the path from "3D pipeline runs" to "3D pipeline reconstructs the brain."
 
+> **UPDATE 2026-06-15 — the diagnosis below was WRONG; preconditioning is the fix.**
+> 2D from-water skull-recovery experiments (single metric = % skull contrast recovered)
+> showed: **L2+`precondition=True` = 41%** vs L2 alone = 17% — pseudo-Hessian
+> preconditioning more than *doubled* recovery. **AWI is a dead end** (both the full-FFT
+> and a proper limited-length matching filter did *worse* than L2: 0.7–7.8%). Crucially,
+> plain L2 did **not** collapse to 0% in 2D, so "984 = cycle-skip, fix with AWI" is
+> **falsified** — 984's 0% skull is a **gradient-conditioning** failure (it ran
+> `precondition=False`; near-transducer voxels dominate, the deep skull starves).
+> **The cheap, real fix: re-run 984 with `precondition=True`.** §§3–9 below (SE(3) MOFI /
+> template-prior FWI) remain a valid longer-term direction but are NOT the first lever.
+
 ## 1. Why
 
 Plain FWI from a homogeneous water start does **not** recover the skull. Evidence: the
@@ -167,19 +178,18 @@ Small grids (48³–64³) for tests; 192³ only for the final run.
 **Total to a first real 3D brain image (V4): ~1.5–2 focused weeks + GPU.** It is research,
 not a guaranteed outcome — V2/V3 are the go/no-go gates before committing 192³ compute.
 
-## 10. First step
+## 10. First step (REVISED — see top banner)
 
-Given §1.5, the highest-leverage first move is **not** SE(3) MOFI but a **recipe upgrade
-experiment** on the existing 192³ MIDA setup: implement an **AWI objective** in
-`inversion/losses.py`, bump elements/sources (256→512, use more of them as sources), and
-extend the frequency ladder as far as 192³ allows (~400 kHz). Run from a simple start and
-see whether the skull/brain begin to recover vs the 984 baseline. This is the cheapest
-test of "are we recipe-limited or starting-model-limited?" and it gates everything:
+The 2D experiments settled the gating question: it's **preconditioning**, not the loss
+function. So the first move is the cheapest possible — **re-run the 984 setup with
+`precondition=True`** (already a `FWIConfig` field; job 984 ran it `False`):
 
-- **If recovery improves** → Path 1 is alive; invest in AWI + denser acquisition (+ finer
-  grid on Modal A100:4 for higher frequency). Template may be unnecessary in-silico.
-- **If it plateaus** → commit to Path 2; start with **Phase A** (`warp_se3` + N-D
-  `run_mofi` + V0 CPU unit tests — cheap, GPU-free, and the 2D code factors cleanly, so
-  it's mostly generalising the rotation matrix and pose dimension, not a rewrite).
-
-Either way, **AWI is on the critical path** — build it first.
+1. **Confirm at 96³ MIDA**: `run_full_usct.py --phantom mida --grid-size 96 --precondition`
+   vs the `precondition=False` baseline. Metric = % skull contrast recovered. (2D showed
+   17% → 41%.)
+2. **If confirmed → 192³ MIDA with `precondition=True`** — the actual fix for the job-984
+   0% skull, at ~no extra cost over the failed run.
+3. **AWI is NOT on the critical path** — it underperformed L2 in every test; keep
+   `awi_loss` as an optional loss but do not pursue it as the skull fix.
+4. SE(3) MOFI / template-prior FWI (§§3–9) remain the longer-term route for the *clinical*
+   case (real CT skull, no ground truth) but are not needed to get a first in-silico image.

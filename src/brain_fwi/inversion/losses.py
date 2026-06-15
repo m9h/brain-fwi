@@ -83,54 +83,76 @@ def multiscale_loss(
     return (1.0 - envelope_weight) * l2 + envelope_weight * env
 
 
+def _awi_matching_filter(predicted, observed, filter_half_len=64, eps=1e-2):
+    """Limited-length least-squares (Wiener) matching filter for ONE trace.
+
+    Solves for ``w`` (supported on lags [-L, L], L = filter_half_len) that
+    minimises ``|| conv(w, predicted) - observed ||²`` via the normal
+    equations (AᵀA + εI) w = Aᵀ observed, where A is the banded convolution
+    matrix of ``predicted``. The LIMITED length is essential: a full-length
+    filter can deconvolve predicted→observed exactly, which makes the FWI
+    velocity gradient ill-conditioned/uninformative (the earlier full-FFT
+    variant underperformed plain L2 on skull recovery). A short filter
+    forces the misfit to localise as a genuine time lag.
+
+    Returns ``(w, lags)`` with ``lags = -L .. L``. Differentiable end to end
+    (the linear solve included), so ``jax.grad`` yields the AWI adjoint.
+    """
+    nt = predicted.shape[0]
+    L = int(min(filter_half_len, nt // 2 - 1))
+    M = 2 * L + 1
+    t = jnp.arange(nt)[:, None]
+    j = jnp.arange(M)[None, :]
+    idx = t - j + L                              # conv(w,p)[t] = Σ_j w[j]·p[t-j+L]
+    valid = (idx >= 0) & (idx < nt)
+    A = jnp.where(valid, predicted[jnp.clip(idx, 0, nt - 1)], 0.0)  # (nt, M)
+    AtA = A.T @ A
+    Atd = A.T @ observed
+    reg = eps * (jnp.trace(AtA) / M + 1e-30)
+    w = jnp.linalg.solve(AtA + reg * jnp.eye(M), Atd)
+    return w, jnp.arange(-L, L + 1)
+
+
 def awi_loss(
     predicted: jnp.ndarray,
     observed: jnp.ndarray,
+    filter_half_len: int = 64,
     eps: float = 1e-2,
 ) -> jnp.ndarray:
     """Adaptive Waveform Inversion misfit (Warner & Guasch 2016).
 
-    Rather than the raw residual, AWI finds — per trace — the Wiener
-    matching filter ``w`` that maps the predicted trace onto the observed
-    trace, and penalises the filter for energy away from zero lag:
+    Per trace, find the LIMITED-length Wiener matching filter ``w`` that maps
+    predicted onto observed (see :func:`_awi_matching_filter`), then penalise
+    its energy away from zero lag:
 
         J = 0.5 * mean_traces  Σ_τ (τ·w(τ))²  /  Σ_τ w(τ)²
 
-    When predicted matches observed (up to scaling) the optimal filter is
-    a spike at zero lag and J → 0. A cycle-skipped misalignment of k
-    samples drives w to a spike at lag k, so J ≈ 0.5·k² — a single, wide
-    basin in the time shift, with NO spurious local minima at whole-cycle
-    offsets (where plain L2 cycle-skips). This is what lets FWI climb the
-    high-contrast skull from a poor starting model.
-
-    The matching filter is computed by frequency-domain (regularised
-    Wiener) deconvolution, so the whole objective is differentiable and
-    ``jax.grad`` yields the adjoint source automatically — no hand-derived
-    AWI adjoint needed (the j-Wave/JAX advantage).
+    A cycle-skipped misalignment of k samples drives w to a spike at lag k,
+    so J ≈ 0.5·k² — a single wide basin in the time shift with NO spurious
+    local minima at whole-cycle offsets (where plain L2 cycle-skips).
+    Differentiable, so ``jax.grad`` yields the adjoint source automatically.
 
     Args:
-        predicted: (n_timesteps, n_sensors) simulated data.
+        predicted: (n_timesteps, n_sensors) or (n_timesteps,) simulated data.
         observed: Same shape.
-        eps: Wiener regularisation, relative to each trace's peak power
-            spectral density. Larger = smoother filter, more stable on
-            low-energy or noisy traces.
+        filter_half_len: matching-filter half-length L (lags ±L). Must cover
+            the largest expected time shift; kept short for a well-conditioned
+            velocity gradient.
+        eps: Tikhonov regularisation on the normal equations (relative to the
+            mean diagonal), for stability on low-energy/noisy traces.
 
     Returns:
         Scalar AWI loss (minimised at alignment).
     """
-    nt = predicted.shape[0]
-    P = jnp.fft.fft(predicted, axis=0)
-    D = jnp.fft.fft(observed, axis=0)
-    power = jnp.abs(P) ** 2
-    reg = eps * jnp.max(power, axis=0, keepdims=True)
-    # Wiener matching filter: w ⋆ predicted ≈ observed.
-    W = jnp.conj(P) * D / (power + reg + 1e-30)
-    w = jnp.real(jnp.fft.ifft(W, axis=0))            # (nt, n_sensors)
-    # Signed lags in samples, zero-centred in FFT order (0,1,..,-2,-1).
-    tau = (jnp.fft.fftfreq(nt) * nt)[:, jnp.newaxis]
-    num = jnp.sum((tau * w) ** 2, axis=0)            # penalised filter energy
-    den = jnp.sum(w ** 2, axis=0) + 1e-30            # total filter energy
-    return 0.5 * jnp.mean(num / den)
+    def per_trace(p, d):
+        w, lags = _awi_matching_filter(p, d, filter_half_len, eps)
+        tau = lags.astype(w.dtype)
+        return jnp.sum((tau * w) ** 2) / (jnp.sum(w ** 2) + 1e-30)
+
+    if predicted.ndim == 1:
+        return 0.5 * per_trace(predicted, observed)
+    Js = jax.vmap(per_trace, in_axes=(1, 1))(predicted, observed)
+    return 0.5 * jnp.mean(Js)
 
 
 def _hilbert_envelope(x: jnp.ndarray) -> jnp.ndarray:

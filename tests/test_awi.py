@@ -36,6 +36,23 @@ def _shift(d, k):
     return jnp.roll(d, k)[:, None]
 
 
+def test_matching_filter_peaks_at_shift(centered_burst):
+    """Proper (limited-length) AWI: the Wiener matching filter that maps the
+    predicted trace onto a time-shifted copy must PEAK AT THE SHIFT LAG.
+
+    This is the property the full-length FFT variant lacked — and the reason
+    its FWI velocity gradient was uninformative (it underperformed L2 on the
+    skull-recovery experiment). A filter that localises the misfit as a lag
+    is what makes the gradient drive the model toward alignment.
+    """
+    from brain_fwi.inversion.losses import _awi_matching_filter
+    d, _T = centered_burst
+    s = 12  # observed = predicted delayed by 12 samples
+    w, lags = _awi_matching_filter(d, jnp.roll(d, s), filter_half_len=40, eps=1e-3)
+    peak_lag = int(np.asarray(lags)[int(jnp.argmax(jnp.abs(w)))])
+    assert abs(peak_lag - s) <= 1, f"filter peaked at lag {peak_lag}, expected ~{s}"
+
+
 def test_awi_minimised_at_alignment(centered_burst):
     """AWI is non-negative and strictly minimised at perfect alignment.
 
