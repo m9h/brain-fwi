@@ -164,7 +164,13 @@ approach. In parallel, the SMILE Lab at UNC Charlotte
 (Lin)~\citep{Li2022brainpuzzle} has explored learning-based FWI
 for transcranial USCT, and Neurotech@Berkeley~\citep{NeurotechSonus}
 attempted a Stride-based reimplementation but encountered memory
-limitations at the MIDA model scale.
+limitations at the MIDA model scale. Most recently, the Imperial group
+introduced guidance-free skull-template registration via manifold
+optimisation~\citep{Bates2026mofi}, removing the dependence on a
+co-registered MRI/CT scan; we reimplement this pose-alignment step in
+JAX (Section~\ref{sec:mofi}) as a further illustration that a
+differentiable forward solver yields new inverse formulations at no
+additional derivation cost.
 
 While these efforts have proven the concept, they share a common
 limitation: the adjoint must be re-derived and re-implemented for
@@ -329,6 +335,61 @@ $\mathcal{O}(N_s)$ to $\mathcal{O}(1)$ forward problems.
 \paragraph{Optimisation.}
 We use Adam~\citep{Kingma2015adam} via Optax with Gaussian gradient
 smoothing ($\sigma = 2$--$5$ grid points) for spatial regularisation.
+
+\subsection{Skull-template pose alignment}
+\label{sec:mofi}
+
+Transcranial FWI requires a skull template --- sound speed and shape,
+typically derived from CT --- as a starting model, rigidly aligned to
+the patient's head pose. A mis-aligned template defeats the inversion:
+the global rotation/translation mismatch appears as a large,
+cycle-skipped residual that pixel-wise gradient descent cannot remove.
+Conventionally the alignment is supplied by a co-registered MRI/CT scan,
+reintroducing the cost and logistics that point-of-care ultrasound aims
+to avoid. Bates et al.~\citep{Bates2026mofi} recently showed that the
+pose can be recovered from the acoustic data alone by \emph{manifold
+optimisation for FWI} (MOFI): instead of updating the
+$\mathcal{O}(10^5\text{--}10^6)$ voxels, one optimises the three
+parameters $\boldsymbol{\phi} = (\theta, \delta_1, \delta_2)$ of a rigid
+Special Euclidean $SE(2)$ transform $T_{\boldsymbol{\phi}}$ applied to
+the template,
+%
+\begin{equation}
+\hat{\boldsymbol{\phi}} = \underset{\boldsymbol{\phi}}{\arg\min}
+  \sum_{s=1}^{N_s} \left\| p_s\!\left( c \circ
+  T_{\boldsymbol{\phi}}^{-1} \right) - d_s \right\|^2 ,
+\label{eq:mofi}
+\end{equation}
+%
+where $c \circ T_{\boldsymbol{\phi}}^{-1}$ is the template resampled by
+bilinear interpolation at the inversely-transformed grid coordinates.
+The pose gradient follows from the chain rule,
+$\partial f / \partial \boldsymbol{\phi} =
+\left( \partial c_{\boldsymbol{\phi}} / \partial \boldsymbol{\phi}
+\right)^{\!\top} \partial f / \partial c_{\boldsymbol{\phi}}$, composing
+the warp Jacobian with the standard FWI velocity gradient.
+
+This is exactly the setting in which the differentiable forward operator
+pays off. The reference implementation assembles this gradient across two
+frameworks --- a PyTorch automatic-differentiation warp wrapped around a
+Stride adjoint-state solve --- whereas here the entire composition is a
+single reverse-mode pass: \texttt{jax.grad} of
+\texttt{l2\_loss(simulate(warp\_se2(template, phi)))} returns
+$\partial f / \partial \boldsymbol{\phi}$ with the rigid warp and the
+wave physics differentiated together, and no hand-coded
+Jacobian-transpose--vector product. We rescale the $SE(2)$ tangent so
+rotation and translation contribute commensurately, normalise the search
+direction by the norm of the first gradient, and take backtracking
+line-search steps --- the stability recipe of~\citep{Bates2026mofi}. The
+recovered transform seeds the voxel- or SIREN-parameterised
+\texttt{run\_fwi} described above. The $SE(2)$ warp and the autodiff pose
+recovery are covered by unit tests (warp identity, integer-shift
+consistency, and gradient-descent recovery of a known pose on an
+image-matching objective), and a finite-difference check of
+$\partial f / \partial \boldsymbol{\phi}$ through the wave solver is
+included to verify the coupled warp--physics gradient. The $SE(3)$ and
+non-rigid (diffeomorphism-group) generalisations follow the same
+construction.
 
 \subsection{Resolution analysis}
 
@@ -591,9 +652,13 @@ model~\citep{Iacono2015mida} is integrated as a phantom source for
 more realistic anatomy, and inter-subject variability is addressed
 via a dedicated augmentation pipeline (per-tissue property jitter
 and smooth deformation warps) that feeds a Phase-0 training dataset
-for the learning-based extensions described above. In-vivo
-validation and clinically-realistic acquisition noise models are
-deferred.
+for the learning-based extensions described above. The skull starting
+model was previously assumed pre-registered; the $SE(2)$ pose-alignment
+stage (Section~\ref{sec:mofi}) removes that assumption for rigid
+mis-alignment, but inherits FWI's finite basin of attraction (it
+recovers poses within roughly a sub-$90^\circ$ phase mismatch) and is
+presently limited to 2D rigid transforms. In-vivo validation and
+clinically-realistic acquisition noise models are deferred.
 
 % ============================================================================
 \section{Software}
