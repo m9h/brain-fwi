@@ -67,10 +67,40 @@ prior-quality issue:
    the skull-base/orbit, so even a largest-connected-component ROI can't isolate the cerebrum, and
    the face/sinus region dominates the error.
 
-## Next phase: 3D
+## 3D (the fix) — RESULT
 
-Apply the **same** pipeline in 3D on the GB10 (FWI is fast there). 3D removes both 2D blockers:
-the intracranial volume is well-defined (no face entanglement) and the acquisition has full
-angular coverage. Plus: proper DPS (measurement-guided posterior), a richer prior trained on
-**SHARM** (196 cortical/cancellous heads — not yet on disk; SynthRAD2023/Birnbaum are), and
-higher frequency. The prior + preconditioning + MOFI all compose unchanged into the 3D loop.
+The **same** pipeline applied in 3D on the GB10 removes both 2D blockers and, for the first time
+in this project, the diffusion prior **improves over the starting model** (in every 2D variant it
+could only regularise back toward init). 3D works because the intracranial volume is a clean
+connected component (`birnbaum.cerebrum_volume_crop` / `build_volume_dataset` — 3D largest-CC, no
+face entanglement) and the helmet gives full angular coverage.
+
+Pipeline (all GB10; Modal trains the NN fine but cannot run j-Wave FWI):
+1. `python scripts/build_birnbaum_3d_dataset.py` → 120 cerebrum volumes at 48³ (holds out 4 subjects).
+2. `modal run scripts/modal_train_unet3d.py` → trains `UNet3DScore` (`inference/score_unet3d.py`).
+3. `python scripts/validate_3d_prior.py` (CPU) → Tweedie denoise of a held-out real cerebrum shrinks
+   ROI-RMSE at every noise level (+12% @t=0.05 … +45% @t=0.5): the *local* score is informative even
+   though small-N unconditional samples look fragmented — and the local score is what DPS uses.
+4. `python examples/dps_fwi_3d_demo.py` (GB10) → 3D DPS-FWI on held-out subj2 (48³/3mm, skull given
+   at truth MOFI-style, helmet 16–20 fixed shots, bands 20-45/40-80 kHz, t_end 100 µs).
+
+Held-out subj2 cerebrum-ROI RMSE (init = water, 65.3):
+
+| run | cerebrum RMSE | brain-only RMSE | lesion (true 1660) |
+|-----|---------------|-----------------|--------------------|
+| no prior (12 it) | 65.3 → 68.1 (−4%) | — | 1531 |
+| **3D prior (12 it)** | **65.3 → 54.8 (+16%)** | — | 1536 |
+| no prior (16 it) | 65.3 → 74.6 (−14%) | 69.9 | 1538 |
+| **3D prior (16 it)** | **65.3 → 61.0 (+7%)** | **55.7** | 1537 |
+
+The prior beats no-prior by ~18–20% relative in both runs (robust); the gain *over init* depends on
+iteration count (an iteration sweet spot ~12), because the DPS here is a **fixed-t nudge**, not a
+measurement-guided posterior — more FWI iters accumulate data-misfit artifact the simple nudge can't
+fully balance. The clearest, most robust win is brain-tissue cleanup (brain-only RMSE 69.9 → 55.7).
+
+**Remaining gap — the focal lesion** (~1537 of 1660, ≈23% contrast) is flat across iteration counts ⇒
+**resolution-limited, not prior-limited**: a ~10 mm lesion at 48³/3 mm under a 40–80 kHz band (λ 18–37 mm)
+is under-resolved. Next steps: finer grid (96³/1.5 mm, ~150 kHz; needs a 96³ prior + ~8× FWI cost),
+**proper DPS** (measurement-guided/annealed-t, replacing the fixed-t nudge — should lift the over-init
+gain at any resolution), a richer prior on **SHARM** (196 heads, not yet on disk), and MOFI for the
+skull pose (here given at truth). Prior + preconditioning + MOFI all compose unchanged into the 3D loop.

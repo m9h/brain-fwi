@@ -6,9 +6,14 @@ geometrically + visually): 0=background, 1=lesion (stroke), 2/3/4=brain tissue,
 5=skull (bone), 6=scalp.
 
 Provides label->acoustic-velocity mapping, a cerebrum-only ROI (largest brain
-connected component, cropped+centred to exclude face/skull-base/sinuses), and a
-2D-slice dataset builder for training anatomy priors
-(see :mod:`brain_fwi.inference.score_unet`). See ``docs/design/diffusion_prior_fwi.md``.
+connected component, cropped+centred to exclude face/skull-base/sinuses), and
+dataset builders for training anatomy priors: 2D slices
+(:func:`build_slice_dataset`, see :mod:`brain_fwi.inference.score_unet`) and 3D
+cerebrum volumes (:func:`build_volume_dataset`, see
+:mod:`brain_fwi.inference.score_unet3d`). In 3D the brain+lesion labels form one
+connected component cleanly separated from the face by the skull, so a 3D
+largest-CC isolates the cerebrum — the 2D face-entanglement blocker is gone.
+See ``docs/design/diffusion_prior_fwi.md``.
 """
 from pathlib import Path
 import glob
@@ -86,3 +91,43 @@ def build_slice_dataset(files: list[str], S: int = 64, per_subject_brain: int = 
             if c is not None:
                 imgs.append(prior_image(c).reshape(-1))
     return np.stack(imgs).astype(np.float32)
+
+
+def cerebrum_volume_crop(lab3d: np.ndarray, S: int = 48, margin: int = 5):
+    """Crop a head label volume to its cerebrum (3D largest brain+lesion CC) +
+    margin and resize to ``S^3`` (nearest). Returns the cropped label volume, or
+    None if too little brain. Unlike the 2D :func:`cerebrum_crop`, the 3D
+    connected component cleanly excludes the face/skull (no entanglement)."""
+    roi = largest_cc(np.isin(lab3d, BRAIN) | (lab3d == LESION))
+    if roi.sum() < 5000:
+        return None
+    zs, ys, xs = np.where(roi)
+    sl = tuple(
+        slice(max(a.min() - margin, 0), min(a.max() + margin + 1, lab3d.shape[i]))
+        for i, a in enumerate((zs, ys, xs))
+    )
+    crop = lab3d[sl]
+    return zoom(crop, tuple(S / crop.shape[i] for i in range(3)), order=0)
+
+
+def prior_volume(crop3d: np.ndarray) -> np.ndarray:
+    """3D prior-training volume: cerebrum velocity on a water frame (no skull/face)."""
+    return np.where(roi_mask(crop3d), to_velocity(crop3d, with_skull=False), C_WATER).astype(np.float32)
+
+
+def build_volume_dataset(files: list[str], S: int = 48, flip_augment: bool = True):
+    """Flattened (N, S^3) cerebrum-volume prior images, one (+ L-R flip) per head.
+
+    Trains the 3D anatomy prior (:mod:`brain_fwi.inference.score_unet3d`)."""
+    import nibabel as nib
+    vols = []
+    for f in files:
+        lab = np.asarray(nib.load(f).dataobj).astype(np.int16)
+        c = cerebrum_volume_crop(lab, S=S)
+        if c is None:
+            continue
+        v = prior_volume(c)
+        vols.append(v.reshape(-1))
+        if flip_augment:
+            vols.append(v[:, :, ::-1].copy().reshape(-1))
+    return np.stack(vols).astype(np.float32)
