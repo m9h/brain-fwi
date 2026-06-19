@@ -50,6 +50,12 @@ def main():
     ap.add_argument("--n-shots", type=int, default=20)
     ap.add_argument("--iters", type=int, default=16)
     ap.add_argument("--prior-lr", type=float, default=8.0)
+    # DPS schedule: baseline is fixed-t (t-hi==t-lo, no decay/ramp); the improved
+    # scheme anneals t high->low (GNC), decays the data step, and ramps the prior.
+    ap.add_argument("--t-hi", type=float, default=0.25)
+    ap.add_argument("--t-lo", type=float, default=0.04)
+    ap.add_argument("--lr-decay", type=float, default=0.3, help="data lr shrinks to lr*this by the end")
+    ap.add_argument("--prior-ramp", type=float, default=1.5, help="prior_lr grows by this factor by the end")
     args = ap.parse_args()
 
     S, dx, pml = args.S, args.dx, 8
@@ -98,12 +104,22 @@ def main():
 
     vg = jax.value_and_grad(shot_loss)
 
-    def fwi(prior_lr, t_eps=0.1, lr=20.0):
+    def fwi(prior_lr, anneal=False, lr=20.0):
+        """DPS-guided FWI. anneal=False -> fixed-t MAP nudge (baseline). anneal=True ->
+        t high->low (graduated non-convexity), data-lr decay, prior ramp."""
         x = jnp.where(skull, C_SKULL, C_WATER).astype(jnp.float32)
+        total = len(BANDS) * args.iters; gi = 0
         for fmin, fmax in BANDS:
             bp = _bandpass_signal(sig, dt, fmin, fmax)
             bobs = jax.vmap(lambda d: jax.vmap(lambda col: _bandpass_signal(col, dt, fmin, fmax))(d.T).T)(obs)
             for _ in range(args.iters):
+                frac = gi / max(total - 1, 1)
+                if anneal:
+                    t_eps = args.t_hi + (args.t_lo - args.t_hi) * frac
+                    lr_t = lr * (1.0 - (1.0 - args.lr_decay) * frac)
+                    plr = prior_lr * (1.0 + (args.prior_ramp - 1.0) * frac)
+                else:
+                    t_eps, lr_t, plr = 0.1, lr, prior_lr
                 g = jnp.zeros_like(x); gsq = jnp.zeros_like(x)
                 for k in range(args.n_shots):
                     _, gs = vg(x, src[k], bobs[k], bp); g += gs; gsq += gs ** 2
@@ -111,12 +127,13 @@ def main():
                 g = g / (jnp.sqrt(gsq / args.n_shots) + 1e-12 * jnp.max(jnp.sqrt(gsq / args.n_shots)))
                 g = _smooth_gradient(g, 1.0) * imask
                 g = g / (jnp.max(jnp.abs(g)) + 1e-30)
-                x = x - lr * g
+                x = x - lr_t * g
                 if prior_lr > 0:
                     xi = jnp.where(interior, x, C_WATER)
                     s = model(((xi - SM) / SS).reshape(-1), t_eps).reshape(S, S, S) * imask
-                    x = x + prior_lr * s / (jnp.max(jnp.abs(s)) + 1e-30)
+                    x = x + plr * s / (jnp.max(jnp.abs(s)) + 1e-30)
                 x = jnp.clip(x, 1400.0, 2900.0)
+                gi += 1
             x.block_until_ready()
         return np.asarray(x)
 
@@ -132,16 +149,21 @@ def main():
         return rec
 
     print("=== 3D DPS-FWI ===", flush=True)
-    t0 = time.time(); rb = rep("no prior ", fwi(0.0))
-    rd = rep("3D prior ", fwi(args.prior_lr, 0.1))
+    t0 = time.time()
+    rb = rep("no prior  ", fwi(0.0))
+    rf = rep("fixed-t   ", fwi(args.prior_lr, anneal=False))
+    ra = rep("annealed-t", fwi(args.prior_lr, anneal=True))
     print(f"runtime {time.time()-t0:.0f}s", flush=True)
+
+    np.savez(args.out.replace(".png", "_arrays.npz"), c_true=ct, no_prior=rb,
+             fixed=rf, annealed=ra, interior=m, lesion=les)
 
     zc = int(np.round(np.where(les)[0].mean())) if les.sum() else S // 2
     win = dict(vmin=1490, vmax=1700, cmap="turbo")
-    fig, ax = plt.subplots(1, 4, figsize=(16, 4.2))
+    fig, ax = plt.subplots(1, 5, figsize=(20, 4.2))
     panels = [(ct[zc], "TRUE (brain window)", win), (rb[zc], "no prior", win),
-              (rd[zc], "3D prior", win),
-              (np.abs(rd - ct)[zc] * m[zc], "|error| prior", dict(vmin=0, vmax=150, cmap="magma"))]
+              (rf[zc], "fixed-t prior", win), (ra[zc], "annealed-t prior", win),
+              (np.abs(ra - ct)[zc] * m[zc], "|error| annealed", dict(vmin=0, vmax=150, cmap="magma"))]
     for a, (img, ttl, kw) in zip(ax, panels):
         im = a.imshow(np.where(m[zc] | ("error" in ttl), img, np.nan), **kw)
         if les[zc].any():
