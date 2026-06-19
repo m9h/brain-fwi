@@ -87,7 +87,9 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
 
     def shot_loss(x, sp, ot, bp):
         med = build_medium(build_domain((S, S, S), dx), x, rho, pml_size=pml)
-        pred = simulate_shot_sensors(med, ta, sp, pg, bp, dt)
+        # segmented checkpointing: O(sqrt(N)) backward memory so the 96^3 grad
+        # fits the 24 GB serverless card (full history would be ~6 GiB/tensor).
+        pred = simulate_shot_sensors(med, ta, sp, pg, bp, dt, checkpointed=cfg.get("checkpointed", True))
         mt = min(pred.shape[0], ot.shape[0]); return l2_loss(pred[:mt], ot[:mt])
     vg = jax.value_and_grad(shot_loss)
 
@@ -158,7 +160,7 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
 if __name__ == "__main__":
     cfg = {"S": 96, "dx": 1.5e-3, "f0": 80e3, "t_end": 1.0e-4,
            "bands": [[20e3, 45e3], [40e3, 80e3], [70e3, 120e3]],
-           "iters": 10, "n_shots": 16, "prior_lr": 8.0}
+           "iters": 10, "n_shots": 12, "prior_lr": 8.0, "checkpointed": True}
     prior = open("/tmp/brain_score_3d_96.eqx", "rb").read()
     crop = open("/tmp/subj2_crop_96.npy", "rb").read()
     norm = open("/tmp/brain_score_3d_96_norm.npz", "rb").read()
