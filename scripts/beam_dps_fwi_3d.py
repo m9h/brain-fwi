@@ -93,7 +93,7 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
         mt = min(pred.shape[0], ot.shape[0]); return l2_loss(pred[:mt], ot[:mt])
     vg = jax.value_and_grad(shot_loss)
 
-    def fwi(prior_lr, anneal, lr=20.0, t_hi=0.25, t_lo=0.04, lr_decay=0.3, prior_ramp=1.5):
+    def fwi(prior_lr, anneal, data_gate=0.0, lr=20.0, t_hi=0.25, t_lo=0.04, lr_decay=0.3, prior_ramp=1.5):
         x = jnp.where(skull, C_SKULL, C_WATER).astype(jnp.float32)
         total = len(BANDS) * ITERS; gi = 0; t0 = time.time()
         for bi, (fmin, fmax) in enumerate(BANDS):
@@ -113,12 +113,18 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
                 g /= N_SHOTS
                 g = g / (jnp.sqrt(gsq / N_SHOTS) + 1e-12 * jnp.max(jnp.sqrt(gsq / N_SHOTS)))
                 g = _smooth_gradient(g, 1.0) * imask
-                g = g / (jnp.max(jnp.abs(g)) + 1e-30)
+                g = g / (jnp.max(jnp.abs(g)) + 1e-30)         # |g| in [0,1]
                 x = x - lr_t * g
                 if prior_lr > 0:
                     xi = jnp.where(interior, x, C_WATER)
                     s = model(((xi - SM) / SS).reshape(-1), t_eps).reshape(S, S, S) * imask
-                    x = x + plr * s / (jnp.max(jnp.abs(s)) + 1e-30)
+                    nudge = s / (jnp.max(jnp.abs(s)) + 1e-30)
+                    if data_gate > 0:
+                        # measurement-guided: back off the prior where the data still
+                        # strongly wants to change x (e.g. the focal lesion, which holds a
+                        # residual data-gradient because prior & data disagree there).
+                        nudge = nudge * (1.0 - jnp.abs(g)) ** data_gate
+                    x = x + plr * nudge
                 x = jnp.clip(x, 1400.0, 2900.0); gi += 1
             x.block_until_ready()
             print(f"    band {bi} [{fmin/1e3:.0f}-{fmax/1e3:.0f}kHz] {time.time()-t0:.0f}s", flush=True)
@@ -134,43 +140,57 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
                 f"lesion {lv:.0f} (true 1660, {100*(lv-1500)/160:.0f}% contrast)")
         print("  " + line, flush=True); out[tag.strip()] = line; return rec
 
+    # (label, prior_lr, anneal, data_gate)
+    modes = cfg.get("modes", [("no prior  ", 0.0, False, 0.0),
+                              ("annealed-t", cfg["prior_lr"], True, 0.0),
+                              ("ann+gate  ", cfg["prior_lr"], True, cfg.get("gate_exp", 1.0))])
     print("=== 96^3 DPS-FWI on beam ===", flush=True); t0 = time.time()
-    rb = rep("no prior  ", fwi(0.0, anneal=False))
-    ra = rep("annealed-t", fwi(cfg["prior_lr"], anneal=True))
+    recs = {}
+    for label, plr0, anneal, gate in modes:
+        recs[label.strip()] = rep(label, fwi(plr0, anneal=anneal, data_gate=gate))
     runtime = time.time() - t0; print(f"runtime {runtime:.0f}s", flush=True)
 
-    nb = io.BytesIO(); np.savez(nb, c_true=ct, no_prior=rb, annealed=ra, interior=m, lesion=les)
+    nb = io.BytesIO(); np.savez(nb, c_true=ct, interior=m, lesion=les, **recs)
 
     zc = int(np.round(np.where(les)[0].mean())) if les.sum() else S // 2
     win = dict(vmin=1490, vmax=1700, cmap="turbo")
-    fig, ax = plt.subplots(1, 4, figsize=(16, 4.2))
-    panels = [(ct[zc], "TRUE (brain window)", win), (rb[zc], "no prior", win),
-              (ra[zc], "annealed-t prior", win),
-              (np.abs(ra - ct)[zc] * m[zc], "|error| annealed", dict(vmin=0, vmax=150, cmap="magma"))]
+    last = list(recs.values())[-1]
+    panels = [(ct[zc], "TRUE", win)]
+    panels += [(recs[lbl.strip()][zc], lbl.strip(), win) for lbl, *_ in modes]
+    panels += [(np.abs(last - ct)[zc] * m[zc], "|err| " + modes[-1][0].strip(), dict(vmin=0, vmax=150, cmap="magma"))]
+    fig, ax = plt.subplots(1, len(panels), figsize=(4 * len(panels), 4.2))
     for a, (img, ttl, kw) in zip(ax, panels):
-        im = a.imshow(np.where(m[zc] | ("error" in ttl), img, np.nan), **kw)
+        im = a.imshow(np.where(m[zc] | ttl.startswith("|err"), img, np.nan), **kw)
         if les[zc].any(): a.contour(les[zc], levels=[0.5], colors="cyan", linewidths=0.8)
         a.set_title(ttl, fontsize=10); a.axis("off"); plt.colorbar(im, ax=a, fraction=0.046)
-    fig.suptitle(f"96^3 DPS-FWI (beam {GPU}), held-out subj2, lesion-centred z={zc}", fontsize=11)
+    fig.suptitle(f"96^3 DPS-FWI (beam {GPU}), held-out {cfg.get('subj', '?')}, lesion-centred z={zc}", fontsize=11)
     plt.tight_layout(); pb = io.BytesIO(); plt.savefig(pb, dpi=120, format="png")
     return {"png": pb.getvalue(), "npz": nb.getvalue(), "metrics": out,
             "runtime_s": round(runtime, 0), "zc": zc, "gpu": GPU}
 
 
 if __name__ == "__main__":
+    subj = os.environ.get("BFWI_SUBJECT", "subj2")
+    out = os.environ.get("BFWI_OUT", f"/tmp/brain_recon_dps_3d_96_{subj}.png")
     cfg = {"S": 96, "dx": 1.5e-3, "f0": 80e3, "t_end": 1.0e-4,
            "bands": [[20e3, 45e3], [40e3, 80e3], [70e3, 120e3]],
-           "iters": 10, "n_shots": 12, "prior_lr": 8.0, "checkpointed": True}
+           "iters": 10, "n_shots": 12, "prior_lr": 8.0, "checkpointed": True,
+           "gate_exp": float(os.environ.get("BFWI_GATE", "1.0")), "subj": subj}
+    _mode = os.environ.get("BFWI_MODE")
+    if _mode == "gate-only":          # data-gated prior vs no-prior (trade-off experiment)
+        cfg["modes"] = [["no prior  ", 0.0, False, 0.0], ["ann+gate  ", cfg["prior_lr"], True, cfg["gate_exp"]]]
+    elif _mode == "anneal-only":      # generalization: the proven-best scheme vs no-prior
+        cfg["modes"] = [["no prior  ", 0.0, False, 0.0], ["annealed-t", cfg["prior_lr"], True, 0.0]]
     prior = open("/tmp/brain_score_3d_96.eqx", "rb").read()
-    crop = open("/tmp/subj2_crop_96.npy", "rb").read()
+    crop = open(f"/tmp/{subj}_crop_96.npy", "rb").read()
     norm = open("/tmp/brain_score_3d_96_norm.npz", "rb").read()
-    print(f"=== launching 96^3 DPS-FWI on beam {GPU} ===", flush=True)
+    print(f"=== launching 96^3 DPS-FWI on beam {GPU} (gate_exp={cfg['gate_exp']}) ===", flush=True)
     res = run.remote(prior, crop, norm, cfg)
     if not res:
         print("FAILED: null result"); raise SystemExit(1)
-    open("/tmp/brain_recon_dps_3d_96.png", "wb").write(res["png"])
-    open("/tmp/brain_recon_dps_3d_96_arrays.npz", "wb").write(res["npz"])
+    open(out, "wb").write(res["png"])
+    open(out.replace(".png", "_arrays.npz"), "wb").write(res["npz"])
     print(f"\nGPU {res['gpu']}  runtime {res['runtime_s']}s  slice z={res['zc']}")
     for k, v in res["metrics"].items():
         print("  " + v)
-    print("saved /tmp/brain_recon_dps_3d_96.png + _arrays.npz")
+    print(f"saved {out} + _arrays.npz")
