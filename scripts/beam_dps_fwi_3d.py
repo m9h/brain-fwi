@@ -75,11 +75,22 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
     ta = build_time_axis(build_medium(build_domain((S, S, S), dx), C_SKULL, 1000.0, pml_size=pml),
                          cfl=0.3, t_end=T_END)
     dt = float(ta.dt); nsteps = int(T_END / dt); sig = ricker_wavelet(f0=F0, dt=dt, n_samples=nsteps)
-    print(f"helmet {ne} elems, {N_SHOTS} shots, {nsteps} steps, dt {dt*1e9:.0f} ns", flush=True)
+    # modeling-error / inverse-crime test: generate the "observed" data with a MISMATCHED
+    # source wavelet (unknown source signature) + measurement noise -- the dominant real-world
+    # errors -- but invert with the standard sig. src_mismatch=1.0, noise_db=0 -> inverse crime.
+    gen_f0 = F0 * cfg.get("src_mismatch", 1.0)
+    sig_gen = ricker_wavelet(f0=gen_f0, dt=dt, n_samples=nsteps)
+    print(f"helmet {ne} elems, {N_SHOTS} shots, {nsteps} steps; data f0={gen_f0/1e3:.0f}kHz, "
+          f"invert f0={F0/1e3:.0f}kHz", flush=True)
 
     t_obs = time.time()
     obs = generate_observed_data(sound_speed=c_true, density=rho, dx=dx, src_positions_grid=src,
-        sensor_positions_grid=pg, freq=F0, pml_size=pml, time_axis=ta, source_signal=sig, dt=dt, verbose=False)
+        sensor_positions_grid=pg, freq=gen_f0, pml_size=pml, time_axis=ta, source_signal=sig_gen, dt=dt, verbose=False)
+    ndb = cfg.get("noise_db", 0.0)
+    if ndb > 0:
+        nstd = jnp.sqrt(jnp.mean(obs ** 2)) * 10 ** (-ndb / 20.0)
+        obs = obs + nstd * jr.normal(jr.PRNGKey(7), obs.shape)
+        print(f"added {ndb:.0f} dB noise (std {float(nstd):.2e})", flush=True)
     print(f"obs {obs.shape} in {time.time()-t_obs:.0f}s", flush=True)
 
     model = eqx.tree_deserialise_leaves(io.BytesIO(prior_bytes), UNet3DScore(S, C=16, key=jr.PRNGKey(0)))
@@ -175,7 +186,9 @@ if __name__ == "__main__":
     cfg = {"S": 96, "dx": 1.5e-3, "f0": 80e3, "t_end": 1.0e-4,
            "bands": [[20e3, 45e3], [40e3, 80e3], [70e3, 120e3]],
            "iters": 10, "n_shots": 12, "prior_lr": 8.0, "checkpointed": True,
-           "gate_exp": float(os.environ.get("BFWI_GATE", "1.0")), "subj": subj}
+           "gate_exp": float(os.environ.get("BFWI_GATE", "1.0")), "subj": subj,
+           "src_mismatch": float(os.environ.get("BFWI_SRC_MISMATCH", "1.0")),
+           "noise_db": float(os.environ.get("BFWI_NOISE_DB", "0"))}
     _mode = os.environ.get("BFWI_MODE")
     if _mode == "gate-only":          # data-gated prior vs no-prior (trade-off experiment)
         cfg["modes"] = [["no prior  ", 0.0, False, 0.0], ["ann+gate  ", cfg["prior_lr"], True, cfg["gate_exp"]]]
@@ -184,10 +197,19 @@ if __name__ == "__main__":
     prior = open("/tmp/brain_score_3d_96.eqx", "rb").read()
     crop = open(f"/tmp/{subj}_crop_96.npy", "rb").read()
     norm = open("/tmp/brain_score_3d_96_norm.npz", "rb").read()
-    print(f"=== launching 96^3 DPS-FWI on beam {GPU} (gate_exp={cfg['gate_exp']}) ===", flush=True)
-    res = run.remote(prior, crop, norm, cfg)
+    print(f"=== launching 96^3 DPS-FWI on beam {GPU} (src_mismatch={cfg['src_mismatch']}, "
+          f"noise_db={cfg['noise_db']}) ===", flush=True)
+    res = None                                           # retry transient flaky-node cuInit failures
+    for attempt in range(4):
+        try:
+            res = run.remote(prior, crop, norm, cfg)
+        except Exception as e:
+            print(f"attempt {attempt+1}/4 raised: {type(e).__name__}: {str(e)[:160]}", flush=True)
+        if res:
+            break
+        print(f"attempt {attempt+1}/4 failed (likely flaky node); retrying...", flush=True)
     if not res:
-        print("FAILED: null result"); raise SystemExit(1)
+        print("FAILED after retries"); raise SystemExit(1)
     open(out, "wb").write(res["png"])
     open(out.replace(".png", "_arrays.npz"), "wb").write(res["npz"])
     print(f"\nGPU {res['gpu']}  runtime {res['runtime_s']}s  slice z={res['zc']}")

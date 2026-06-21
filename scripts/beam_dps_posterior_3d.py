@@ -145,25 +145,42 @@ def run(prior_bytes, crop_bytes, norm_bytes, map_bytes, cfg):
         print("  " + line, flush=True); out[tag.strip()] = line; return rec
 
     x_map_norm = ((jnp.asarray(x_map) - SM) / SS).reshape(-1) * imask.reshape(-1)
-    print(f"=== DPS posterior (t_start={cfg['t_start']}, zeta={cfg['zeta']}, {cfg['n_steps']} steps) ===", flush=True)
+    n_post = cfg.get("n_post", 1)
+    print(f"=== DPS posterior (t_start={cfg['t_start']}, zeta={cfg['zeta']}, {cfg['n_steps']} steps, "
+          f"n_post={n_post}) ===", flush=True)
     t0 = time.time()
-    rmap = rep("MAP (in) ", np.asarray(x_map))
-    rdps = rep("DPS      ", dps(x_map_norm, cfg["t_start"], cfg["zeta"], cfg["n_steps"], jr.PRNGKey(0)))
+    rmap = rep("MAP (in)   ", np.asarray(x_map))
+    samples = []
+    for i in range(n_post):
+        si = dps(x_map_norm, cfg["t_start"], cfg["zeta"], cfg["n_steps"], jr.PRNGKey(i))
+        samples.append(si); print(f"  posterior sample {i+1}/{n_post} done ({time.time()-t0:.0f}s)", flush=True)
+    samples = np.stack(samples)                       # (n_post, S, S, S)
+    pmean = samples.mean(0); pstd = samples.std(0)
+    rep("DPS sample0 ", samples[0])
+    rdps = rep("DPS mean    ", pmean)                  # posterior mean = the point estimate
+    if les.sum() and n_post > 1:                       # the uncertainty unlock: is the lesion flagged?
+        sl, sb = float(pstd[les].mean()), float(pstd[brn].mean())
+        line = f"uncertainty std: lesion {sl:.1f} vs brain {sb:.1f}  (ratio {sl/(sb+1e-9):.2f})"
+        print("  " + line, flush=True); out["uncertainty"] = line
     runtime = time.time() - t0; print(f"runtime {runtime:.0f}s", flush=True)
 
-    nb = io.BytesIO(); np.savez(nb, c_true=ct, MAP=rmap, DPS=rdps, interior=m, lesion=les)
+    # beam caps payloads at 4 MiB -> return only the PNG + metrics (the deliverable);
+    # full 96^3 volumes (31 MB) won't fit. A beam Volume is the durable-output pattern.
     zc = int(np.round(np.where(les)[0].mean())) if les.sum() else S // 2
     win = dict(vmin=1490, vmax=1700, cmap="turbo")
-    panels = [(ct[zc], "TRUE", win), (rmap[zc], "MAP (annealed-t)", win), (rdps[zc], "DPS posterior", win),
-              (np.abs(rdps - ct)[zc] * m[zc], "|err| DPS", dict(vmin=0, vmax=150, cmap="magma"))]
-    fig, ax = plt.subplots(1, 4, figsize=(16, 4.2))
+    umax = float(np.percentile(pstd[m], 99)) + 1e-6 if n_post > 1 else 60.0
+    panels = [(ct[zc], "TRUE", win), (rmap[zc], "MAP (annealed-t)", win),
+              (pmean[zc], "DPS posterior mean", win),
+              (pstd[zc] * m[zc], f"DPS std (uncertainty)", dict(vmin=0, vmax=umax, cmap="magma")),
+              (np.abs(pmean - ct)[zc] * m[zc], "|err| mean", dict(vmin=0, vmax=150, cmap="magma"))]
+    fig, ax = plt.subplots(1, 5, figsize=(20, 4.2))
     for a, (img, ttl, kw) in zip(ax, panels):
-        a.imshow(np.where(m[zc] | ttl.startswith("|err"), img, np.nan), **kw)
+        a.imshow(np.where(m[zc] | ("std" in ttl) | ttl.startswith("|err"), img, np.nan), **kw)
         if les[zc].any(): a.contour(les[zc], levels=[0.5], colors="cyan", linewidths=0.8)
         a.set_title(ttl, fontsize=10); a.axis("off")
-    fig.suptitle(f"96^3 reverse-diffusion DPS vs MAP (beam {GPU}), {cfg.get('subj','?')}, z={zc}", fontsize=11)
+    fig.suptitle(f"96^3 DPS posterior ({n_post} samples) vs MAP (beam {GPU}), {cfg.get('subj','?')}, z={zc}", fontsize=11)
     plt.tight_layout(); pb = io.BytesIO(); plt.savefig(pb, dpi=120, format="png")
-    return {"png": pb.getvalue(), "npz": nb.getvalue(), "metrics": out, "runtime_s": round(runtime, 0), "gpu": GPU}
+    return {"png": pb.getvalue(), "metrics": out, "runtime_s": round(runtime, 0), "gpu": GPU}
 
 
 if __name__ == "__main__":
@@ -176,6 +193,7 @@ if __name__ == "__main__":
            "t_start": float(os.environ.get("BFWI_TSTART", "0.6")),
            "zeta": float(os.environ.get("BFWI_ZETA", "0.3")),
            "n_steps": int(os.environ.get("BFWI_STEPS", "30")),
+           "n_post": int(os.environ.get("BFWI_NPOST", "1")),
            "t_min": 0.02, "subj": subj}
     prior = open(f"/tmp/brain_score_3d{sfx}.eqx", "rb").read()
     crop = open(f"/tmp/{subj}_crop_{S}.npy", "rb").read()
@@ -198,7 +216,9 @@ if __name__ == "__main__":
         print(f"attempt {attempt+1}/4 failed (likely flaky node); retrying...", flush=True)
     if not res:
         print("FAILED after retries"); raise SystemExit(1)
-    open(out, "wb").write(res["png"]); open(out.replace(".png", "_arrays.npz"), "wb").write(res["npz"])
+    open(out, "wb").write(res["png"])
+    if res.get("npz"):
+        open(out.replace(".png", "_arrays.npz"), "wb").write(res["npz"])
     print(f"\nGPU {res['gpu']}  runtime {res['runtime_s']}s")
     for v in res["metrics"].values():
         print("  " + v)
