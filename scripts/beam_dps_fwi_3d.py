@@ -96,13 +96,37 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
     model = eqx.tree_deserialise_leaves(io.BytesIO(prior_bytes), UNet3DScore(S, C=16, key=jr.PRNGKey(0)))
     nz = np.load(io.BytesIO(norm_bytes)); SM, SS = float(nz["mean"]), float(nz["std"])
 
-    def shot_loss(x, sp, ot, bp):
+    def forward_pred(x, sp, bp):
         med = build_medium(build_domain((S, S, S), dx), x, rho, pml_size=pml)
         # segmented checkpointing: O(sqrt(N)) backward memory so the 96^3 grad
         # fits the 24 GB serverless card (full history would be ~6 GiB/tensor).
-        pred = simulate_shot_sensors(med, ta, sp, pg, bp, dt, checkpointed=cfg.get("checkpointed", True))
+        return simulate_shot_sensors(med, ta, sp, pg, bp, dt, checkpointed=cfg.get("checkpointed", True))
+
+    def shot_loss(x, sp, ot, bp):
+        pred = forward_pred(x, sp, bp)
         mt = min(pred.shape[0], ot.shape[0]); return l2_loss(pred[:mt], ot[:mt])
     vg = jax.value_and_grad(shot_loss)
+
+    # ---- source co-inversion (Pratt variable projection) ----------------------
+    # Estimate a per-frequency source filter phi (shared across shots+receivers,
+    # since the physical source signature is shared) by LS-matching modeled data
+    # to observed: phi = sum conj(P) D / sum |P|^2. Apply phi to the prediction in
+    # the misfit (phi held constant -> envelope theorem, ignore d phi/d model).
+    def estimate_phi(x, bp, bobs):
+        NT = bobs.shape[1]; num = 0.0; den = 0.0
+        for k in range(N_SHOTS):
+            pred = forward_pred(x, src[k], bp); mt = min(pred.shape[0], NT)
+            P = jnp.fft.rfft(jnp.pad(pred[:mt], ((0, NT - mt), (0, 0))), axis=0)  # (nf, nrec)
+            D = jnp.fft.rfft(bobs[k], axis=0)
+            num = num + jnp.sum(jnp.conj(P) * D, axis=1); den = den + jnp.sum(jnp.abs(P) ** 2, axis=1)
+        return num / (den + 1e-3 * jnp.max(den))                                  # (nf,) complex
+
+    def shot_loss_si(x, sp, ot, bp, phi):
+        pred = forward_pred(x, sp, bp); NT = ot.shape[0]; mt = min(pred.shape[0], NT)
+        Pp = jnp.fft.rfft(jnp.pad(pred[:mt], ((0, NT - mt), (0, 0))), axis=0)
+        pred_c = jnp.fft.irfft(Pp * phi[:, None], n=NT, axis=0)
+        return l2_loss(pred_c, ot)
+    vg_si = jax.value_and_grad(shot_loss_si)
 
     def fwi(prior_lr, anneal, data_gate=0.0, lr=20.0, t_hi=0.25, t_lo=0.04, lr_decay=0.3, prior_ramp=1.5):
         x = jnp.where(skull, C_SKULL, C_WATER).astype(jnp.float32)
@@ -119,8 +143,13 @@ def run(prior_bytes, crop_bytes, norm_bytes, cfg):
                 else:
                     t_eps, lr_t, plr = 0.1, lr, prior_lr
                 g = jnp.zeros_like(x); gsq = jnp.zeros_like(x)
+                phi = estimate_phi(x, bp, bobs) if cfg.get("src_inv") else None
                 for k in range(N_SHOTS):
-                    _, gs = vg(x, src[k], bobs[k], bp); g += gs; gsq += gs ** 2
+                    if phi is not None:
+                        _, gs = vg_si(x, src[k], bobs[k], bp, phi)
+                    else:
+                        _, gs = vg(x, src[k], bobs[k], bp)
+                    g += gs; gsq += gs ** 2
                 g /= N_SHOTS
                 g = g / (jnp.sqrt(gsq / N_SHOTS) + 1e-12 * jnp.max(jnp.sqrt(gsq / N_SHOTS)))
                 g = _smooth_gradient(g, 1.0) * imask
@@ -188,7 +217,8 @@ if __name__ == "__main__":
            "iters": 10, "n_shots": 12, "prior_lr": 8.0, "checkpointed": True,
            "gate_exp": float(os.environ.get("BFWI_GATE", "1.0")), "subj": subj,
            "src_mismatch": float(os.environ.get("BFWI_SRC_MISMATCH", "1.0")),
-           "noise_db": float(os.environ.get("BFWI_NOISE_DB", "0"))}
+           "noise_db": float(os.environ.get("BFWI_NOISE_DB", "0")),
+           "src_inv": os.environ.get("BFWI_SRC_INV", "0") == "1"}
     _mode = os.environ.get("BFWI_MODE")
     if _mode == "gate-only":          # data-gated prior vs no-prior (trade-off experiment)
         cfg["modes"] = [["no prior  ", 0.0, False, 0.0], ["ann+gate  ", cfg["prior_lr"], True, cfg["gate_exp"]]]
