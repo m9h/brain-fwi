@@ -47,8 +47,13 @@ src = [allsrc[i] for i in np.linspace(0, ne - 1, N_SHOTS).astype(int)]
 ta = build_time_axis(build_medium(build_domain((S, S, S), dx), C_SKULL, 1000.0, pml_size=pml), cfl=0.3, t_end=T_END)
 dt = float(ta.dt); nsteps = int(T_END / dt); sig = ricker_wavelet(f0=F0, dt=dt, n_samples=nsteps)
 gen_f0 = F0 * SRC_MISMATCH; sig_gen = ricker_wavelet(f0=gen_f0, dt=dt, n_samples=nsteps)
-obs = generate_observed_data(sound_speed=c_true, density=rho, dx=dx, src_positions_grid=src,
-    sensor_positions_grid=pg, freq=gen_f0, pml_size=pml, time_axis=ta, source_signal=sig_gen, dt=dt, verbose=False)
+OBS_FILE = os.environ.get("BFWI_OBS_FILE", "")
+if OBS_FILE:                                   # invert externally-generated obs (e.g. k-Wave -> cross-solver test)
+    obs = jnp.asarray(np.load(OBS_FILE).astype(np.float32))
+    print(f"loaded external obs {obs.shape} from {OBS_FILE}", flush=True)
+else:
+    obs = generate_observed_data(sound_speed=c_true, density=rho, dx=dx, src_positions_grid=src,
+        sensor_positions_grid=pg, freq=gen_f0, pml_size=pml, time_axis=ta, source_signal=sig_gen, dt=dt, verbose=False)
 if NOISE_DB > 0:
     nstd = jnp.sqrt(jnp.mean(obs ** 2)) * 10 ** (-NOISE_DB / 20.0)
     obs = obs + nstd * jr.normal(jr.PRNGKey(7), obs.shape)
