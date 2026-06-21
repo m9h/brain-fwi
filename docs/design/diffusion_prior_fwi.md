@@ -104,3 +104,50 @@ is under-resolved. Next steps: finer grid (96³/1.5 mm, ~150 kHz; needs a 96³ p
 **proper DPS** (measurement-guided/annealed-t, replacing the fixed-t nudge — should lift the over-init
 gain at any resolution), a richer prior on **SHARM** (196 heads, not yet on disk), and MOFI for the
 skull pose (here given at truth). Prior + preconditioning + MOFI all compose unchanged into the 3D loop.
+
+## Scaling up: 96³, DPS, generalization, and credibility (2026-06)
+
+The 48³ findings above were superseded by a 96³ campaign. Runners: `scripts/beam_dps_fwi_3d.py`
+(MAP/annealed-t + modeling-error knobs + source co-inversion), `scripts/beam_dps_posterior_3d.py`
+(reverse-diffusion DPS + uncertainty), `scripts/local_fwi_3d.py` (GB10 fallback when beam's serverless
+pool is flaky — see `docs/dev/cloud-gpu-venues.md`).
+
+**Annealed-t DPS + generalization.** Annealed-t (graduated-non-convexity t-schedule + lr-decay + prior
+ramp) beats the fixed-t nudge decisively (48³ +31% vs +7%). At 96³ on held-out subj2 it gives cerebrum
+RMSE **+38%** (brain-only 34.2). Across **all 4 held-out patients** (subj1–4, a separate cohort from the
+GU/NC/NYU training subjects): annealed-t **+52/+38/+49/+46%** — the bulk reconstruction generalizes
+robustly. Focal-lesion recovery scales monotonically with lesion size (334 vox → 0%, 9438 vox → 37%).
+
+**Reverse-diffusion DPS** (`beam_dps_posterior_3d.py`): warm-start from the MAP, reverse VP-SDE with the
+score augmented by the FWI data-likelihood gradient at the Tweedie estimate (Chung 2023). Best bulk in the
+project — 96³ subj2 **+56%** single sample, **+60%** posterior mean (6 samples), brain-only RMSE 34→15.
+But the lesion does **not** improve (24%), robust to ζ over a 30× sweep — a **prior** limitation (the
+lesion-rare prior smooths focal outliers), not an inference one. Force-multiplier: the posterior **std**
+flags the lesion region at **1.19×** the bulk uncertainty — the method says "unsure here" rather than
+silently smoothing.
+
+**Credibility — the inverse crime, and the source-co-inversion fix.** All the above generate the
+"observed" data with the *same* solver used to invert (inverse crime). Breaking it (mismatched source
+wavelet + measurement noise, `BFWI_SRC_MISMATCH`/`BFWI_NOISE_DB`):
+
+| 96³ subj2 condition | no-prior | annealed-t cerebrum | brain-only | lesion |
+|---|---|---|---|---|
+| clean (inverse crime) | −1% | **+38%** | 34.2 | 27% |
+| +20 dB noise only | −2% | **+38%** | 34.1 | 24% |
+| +15% source mismatch only | −43% | +3% | 56 | −12% |
+| mismatch + noise, **no** src-inv | −43% | +3% | 56 | −11% |
+| mismatch + noise, **with src co-inversion** | +27%† | **+52%** | **23.5** | 34% |
+
+Decomposition is clean: the method is **fully robust to 20 dB noise** (+38%, unchanged), and the entire
+collapse is **source-signature mismatch** — the standard *fixable* error. Source co-inversion (Pratt
+variable projection: a per-frequency filter φ = Σconj(P)·D / Σ|P|², shared across shots/receivers, applied
+to the prediction with φ held constant) **rescues +3% → +52%** and even edges past the clean baseline
+(the mismatched 92 kHz source carries more high-frequency information). **Conclusion: robust to realistic
+data error — noise *and* unknown source — once you do standard source estimation.** (†The no-prior
+"lesion 83%" under src-inv is artifact-dominated over-fitting, not a clean recovery; the trustworthy
+lesion is annealed-t's 34%.)
+
+**Honest remaining gaps:** (1) physics-model error is untested — the modeling-error study used the *same*
+solver; the gold-standard is an **independent-solver swap** (k-Wave / Stride). (2) the skull is still
+**given at truth** (MOFI / skull-FWI is the clinical step). (3) the focal lesion still needs a
+**lesion-aware prior** (SHARM or synthetic-lesion augmentation).

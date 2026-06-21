@@ -61,8 +61,19 @@ grids — time scales with timesteps, barely with grid size or GPU tier):
 - The `.venv-beam` has only the beam client (no numpy/jax). Keep entrypoints
   pure-Python: ship inputs as **bytes**, do all numpy/jax/matplotlib work in the
   remote function, and return PNG/npz **bytes**.
+- **4 MiB payload cap** on function args *and* return — full 96³ volume arrays
+  (~3.5 MB each) don't fit a multi-array npz. Return only the PNG + metrics, or
+  use a beam **Volume** for durable large outputs.
+- **Transient `cuInit` / `CUDA_ERROR_UNKNOWN` flaky nodes** — a meaningful fraction
+  of launches hit an unhealthy GPU node and fail at JAX init. Wrap `.remote()` in
+  an auto-retry (the runners try 4×). In a *sustained* flaky window, retries don't
+  help — fall back to the GB10 via `scripts/local_fwi_3d.py`.
+- **Synchronous streaming drops on long (~2 h) runs** — `.remote()` hangs (zombie),
+  result lost. ~76 min is the reliable window; longer runs need a beam Volume.
 
 ## Scripts
 - `scripts/beam_benchmark_forward.py` — forward-sim micro-benchmark (A10G/RTX4090).
-- `scripts/beam_dps_fwi_3d.py` — 96³ DPS-FWI (annealed-t) on beam, the off-GB10 lesion test.
+- `scripts/beam_dps_fwi_3d.py` — 96³ DPS-FWI (annealed-t) + modeling-error knobs + source co-inversion.
+- `scripts/beam_dps_posterior_3d.py` — reverse-diffusion DPS + posterior-mean/uncertainty.
+- `scripts/local_fwi_3d.py` — **GB10 fallback** (same compute, no beam wrapper) for when beam is flaky.
 - `scripts/modal_train_unet3d.py` — 3D score-net training on Modal (48³ A10G / 96³ A100).
