@@ -54,31 +54,38 @@ print(f"template overlap w/ true: {100*float(jnp.mean((template>0.5)&(skull_true
 def skull_field(mask_field):                                   # mask in [0,1] -> velocity (skull/water)
     return C_WATER + (C_SKULL - C_WATER) * jnp.clip(mask_field, 0.0, 1.0)
 
-# ---- MOFI: recover pose by low-freq data misfit through j-Wave -----------------
+# ---- MOFI pose recovery (40-80kHz where skull is visible; GENERIC brain estimate
+#      removes the brain-mismatch floor that flattened the landscape; angles in
+#      DEGREES so adam treats t/ang on the same scale) -----------------------------
 bp_lo = _bandpass_signal(sig, dt, *POSE_BAND)
 obs_lo = jax.vmap(lambda d: jax.vmap(lambda col: _bandpass_signal(col, dt, *POSE_BAND))(d.T).T)(obs)
 pose_src = [src[i] for i in np.linspace(0, N_SHOTS - 1, POSE_SHOTS).astype(int)]
 pose_obs = [obs_lo[i] for i in np.linspace(0, N_SHOTS - 1, POSE_SHOTS).astype(int)]
+brain_est = jnp.where(interior, 1560.0, C_WATER).astype(jnp.float32)   # generic uniform-brain (no FWI needed)
 
 def pose_loss(pose):
-    sk = skull_field(rigid_warp_3d(template, pose["t"], pose["ang"]))
-    med = build_medium(build_domain((S, S, S), dx), sk, rho, pml_size=pml)
+    skm = jnp.clip(rigid_warp_3d(template, pose["t"], jnp.deg2rad(pose["ang_deg"])), 0.0, 1.0)
+    v = brain_est * (1 - skm) + C_SKULL * skm                  # warped skull on the generic brain
+    med = build_medium(build_domain((S, S, S), dx), v, rho, pml_size=pml)
     tot = 0.0
     for k in range(POSE_SHOTS):
         pred = simulate_shot_sensors(med, ta, pose_src[k], pg, bp_lo, dt, checkpointed=True)
         mt = min(pred.shape[0], pose_obs[k].shape[0]); tot = tot + l2_loss(pred[:mt], pose_obs[k][:mt])
     return tot / POSE_SHOTS
 
-print("=== MOFI pose recovery (low-freq, through j-Wave) ===", flush=True)
-pose = {"t": jnp.zeros(3), "ang": jnp.zeros(3)}; opt = optax.adam(0.3); st = opt.init(pose); t0 = time.time()
+def overlap(pose):
+    a = rigid_warp_3d(template, pose["t"], jnp.deg2rad(pose["ang_deg"])) > 0.5
+    return 100 * float(jnp.mean(a & (skull_true > 0.5)) / (jnp.mean(skull_true > 0.5) + 1e-9))
+
+print(f"=== MOFI pose recovery ({POSE_BAND[0]/1e3:.0f}-{POSE_BAND[1]/1e3:.0f}kHz, generic-brain est) ===", flush=True)
+pose = {"t": jnp.zeros(3), "ang_deg": jnp.zeros(3)}; opt = optax.adam(0.5); st = opt.init(pose); t0 = time.time()
 vg_pose = jax.value_and_grad(pose_loss)
 for i in range(POSE_STEPS):
     l, g = vg_pose(pose); up, st = opt.update(g, st); pose = optax.apply_updates(pose, up)
     if (i + 1) % 5 == 0:
-        print(f"  pose step {i+1}/{POSE_STEPS}: misfit {float(l):.4e}  t={np.round(np.asarray(pose['t']),2)}  "
-              f"ang(deg)={np.round(np.rad2deg(np.asarray(pose['ang'])),2)} ({time.time()-t0:.0f}s)", flush=True)
-# recovering pose should be ~ inverse of the perturbation
-aligned = rigid_warp_3d(template, pose["t"], pose["ang"]) > 0.5
+        print(f"  pose {i+1}/{POSE_STEPS}: misfit {float(l):.4e}  t={np.round(np.asarray(pose['t']),2)}  "
+              f"ang(deg)={np.round(np.asarray(pose['ang_deg']),2)}  overlap {overlap(pose):.0f}% ({time.time()-t0:.0f}s)", flush=True)
+aligned = rigid_warp_3d(template, pose["t"], jnp.deg2rad(pose["ang_deg"])) > 0.5
 ov0 = 100 * float(jnp.mean((template > 0.5) & (skull_true > 0.5)) / (jnp.mean(skull_true > 0.5) + 1e-9))
 ov1 = 100 * float(jnp.mean(aligned & (skull_true > 0.5)) / (jnp.mean(skull_true > 0.5) + 1e-9))
 print(f"skull overlap with truth: misaligned {ov0:.0f}% -> MOFI-aligned {ov1:.0f}%", flush=True)
