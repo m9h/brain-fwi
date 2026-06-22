@@ -22,7 +22,10 @@ from mofi3d import rigid_warp_3d
 
 S = 96; dx = 1.5e-3; pml = 8; F0 = 80e3; T_END = 1.0e-4; N_SHOTS = 12
 T_PERT = jnp.array([4.0, 2.0, 0.0]); A_PERT = jnp.array([0.0, 0.0, np.deg2rad(5.0)])   # known misalignment
-POSE_SHOTS = 6; POSE_STEPS = 30; POSE_BAND = (20e3, 45e3)
+POSE_SHOTS = 6; POSE_STEPS = int(os.environ.get("BFWI_POSE_STEPS", "30"))
+# skull (~2-3 vox shell) is INVISIBLE at low freq (lambda>>shell) -> use a band where
+# it's visible (80kHz: lambda~13 vox; a 4-vox shift is ~0.3 lambda, sub-cycle-skip).
+POSE_BAND = (float(os.environ.get("BFWI_POSE_FMIN", "40e3")), float(os.environ.get("BFWI_POSE_FMAX", "100e3")))
 
 crop = np.load("/tmp/subj2_crop_96.npy")
 c_true = jnp.asarray(to_velocity(crop, with_skull=True))
