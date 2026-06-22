@@ -17,11 +17,13 @@ def main():
     ap.add_argument("--out", default="/tmp/birnbaum_3d_dataset.npz")
     ap.add_argument("--S", type=int, default=48)
     ap.add_argument("--holdout", type=int, default=4, help="subjects reserved for the FWI target")
+    ap.add_argument("--lesion-aug", type=int, default=0,
+                    help="synthetic-lesion-injected copies per head (lesion-aware prior)")
     args = ap.parse_args()
 
     files = birnbaum.label_files()
     train = files[: -args.holdout] if args.holdout else files
-    data = birnbaum.build_volume_dataset(train, S=args.S)
+    data = birnbaum.build_volume_dataset(train, S=args.S, lesion_aug=args.lesion_aug)
     np.savez(args.out, data=data, mean=data.mean(), std=data.std(), S=args.S)
     print(f"3D dataset {data.shape} (S={args.S}), mean {data.mean():.0f} std {data.std():.1f}, "
           f"lesion-bearing {(data.max(1) > 1650).sum()}/{len(data)} -> {args.out}")

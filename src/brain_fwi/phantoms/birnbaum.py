@@ -115,19 +115,44 @@ def prior_volume(crop3d: np.ndarray) -> np.ndarray:
     return np.where(roi_mask(crop3d), to_velocity(crop3d, with_skull=False), C_WATER).astype(np.float32)
 
 
-def build_volume_dataset(files: list[str], S: int = 48, flip_augment: bool = True):
-    """Flattened (N, S^3) cerebrum-volume prior images, one (+ L-R flip) per head.
+def inject_synthetic_lesions(vol: np.ndarray, roi: np.ndarray, rng,
+                             n_range=(1, 3), radius_range=(2, 6), vel_range=(1610.0, 1710.0)):
+    """Inject random spherical high-velocity lesions into a cerebrum volume (within
+    roi). Makes the diffusion prior LESION-AWARE: trained only on the real (rare,
+    location-specific) Birnbaum lesions, the prior smooths focal blobs as outliers
+    (the DPS finding); injecting diverse synthetic lesions teaches it focal
+    high-velocity blobs are plausible anywhere. Returns a new volume."""
+    out = vol.copy()
+    idx = np.argwhere(roi)
+    if len(idx) == 0:
+        return out
+    zz, yy, xx = np.indices(vol.shape)
+    for _ in range(int(rng.integers(n_range[0], n_range[1] + 1))):
+        cz, cy, cx = idx[rng.integers(len(idx))]
+        r = float(rng.integers(radius_range[0], radius_range[1] + 1))
+        v = float(rng.uniform(*vel_range))
+        sph = ((zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2) <= r ** 2
+        out[sph & roi] = v
+    return out
 
-    Trains the 3D anatomy prior (:mod:`brain_fwi.inference.score_unet3d`)."""
+
+def build_volume_dataset(files: list[str], S: int = 48, flip_augment: bool = True,
+                         lesion_aug: int = 0, seed: int = 0):
+    """Flattened (N, S^3) cerebrum-volume prior images, one (+ L-R flip) per head.
+    With ``lesion_aug>0``, add that many synthetic-lesion-injected copies per head
+    (a lesion-aware prior). Trains :mod:`brain_fwi.inference.score_unet3d`."""
     import nibabel as nib
+    rng = np.random.default_rng(seed)
     vols = []
     for f in files:
         lab = np.asarray(nib.load(f).dataobj).astype(np.int16)
         c = cerebrum_volume_crop(lab, S=S)
         if c is None:
             continue
-        v = prior_volume(c)
-        vols.append(v.reshape(-1))
-        if flip_augment:
-            vols.append(v[:, :, ::-1].copy().reshape(-1))
+        v = prior_volume(c); roi = roi_mask(c)
+        bases = [(v, roi)] + ([(v[:, :, ::-1].copy(), roi[:, :, ::-1])] if flip_augment else [])
+        for b, broi in bases:
+            vols.append(b.reshape(-1))
+            for _ in range(lesion_aug):
+                vols.append(inject_synthetic_lesions(b, broi, rng).reshape(-1))
     return np.stack(vols).astype(np.float32)
