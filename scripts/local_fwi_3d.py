@@ -35,7 +35,21 @@ sfx = "_96" if S == 96 else ""
 print(f"S={S} subj={SUBJ} src_mismatch={SRC_MISMATCH} noise_db={NOISE_DB} src_inv={SRC_INV}", flush=True)
 
 crop = np.load(f"/tmp/{SUBJ}_crop_{S}.npy")
-c_true = jnp.asarray(to_velocity(crop, with_skull=True)); skull = jnp.asarray(crop == SKULL)
+c_true = jnp.asarray(to_velocity(crop, with_skull=True))      # TRUE skull (for obs generation)
+# skull-from-data: the FWI's skull can be a MISALIGNED TEMPLATE (rigid warp =
+# registration-error proxy, the pose error MOFI corrects), not the truth.
+SKULL_SHIFT = float(os.environ.get("BFWI_SKULL_SHIFT", "0"))  # voxels
+SKULL_ROT = float(os.environ.get("BFWI_SKULL_ROT", "0"))      # degrees (axis-0/1 plane)
+skull_np = (crop == SKULL)
+if SKULL_SHIFT or SKULL_ROT:
+    from scipy.ndimage import affine_transform
+    th = np.deg2rad(SKULL_ROT); ctr = np.array(skull_np.shape, float) / 2.0
+    R = np.array([[np.cos(th), -np.sin(th), 0.0], [np.sin(th), np.cos(th), 0.0], [0.0, 0.0, 1.0]])
+    off = ctr - R @ ctr - np.array([SKULL_SHIFT, 0.5 * SKULL_SHIFT, 0.0])
+    skull_np = affine_transform(skull_np.astype(np.float32), R, offset=off, order=1) > 0.5
+    print(f"MISALIGNED skull template: shift {SKULL_SHIFT}vox, rot {SKULL_ROT}deg "
+          f"(overlap w/ true {100*np.mean(skull_np & (np.asarray(crop)==SKULL))/ (np.mean(np.asarray(crop)==SKULL)+1e-9):.0f}%)", flush=True)
+skull = jnp.asarray(skull_np)
 interior = jnp.asarray(roi_mask(crop)); imask = interior.astype(jnp.float32)
 rho = jnp.full((S, S, S), 1000.0, jnp.float32)
 c = (S // 2) * dx; r = (S // 2 - 4) * dx
