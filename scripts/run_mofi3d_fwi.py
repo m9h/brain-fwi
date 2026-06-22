@@ -63,6 +63,12 @@ pose_src = [src[i] for i in np.linspace(0, N_SHOTS - 1, POSE_SHOTS).astype(int)]
 pose_obs = [obs_lo[i] for i in np.linspace(0, N_SHOTS - 1, POSE_SHOTS).astype(int)]
 brain_est = jnp.where(interior, 1560.0, C_WATER).astype(jnp.float32)   # generic uniform-brain (no FWI needed)
 
+# early-time window: the first arrivals transit the high-contrast SKULL before the
+# brain reverberations arrive -> windowing makes the pose misfit skull-dominated and
+# far less brain-dependent (breaks the pose<->brain chicken-and-egg).
+NW = int(float(os.environ.get("BFWI_POSE_TWIN", "0.45")) * nsteps)
+print(f"pose misfit window: first {NW}/{nsteps} samples (~{NW*dt*1e6:.0f}us)", flush=True)
+
 def pose_loss(pose):
     skm = jnp.clip(rigid_warp_3d(template, pose["t"], jnp.deg2rad(pose["ang_deg"])), 0.0, 1.0)
     v = brain_est * (1 - skm) + C_SKULL * skm                  # warped skull on the generic brain
@@ -70,7 +76,7 @@ def pose_loss(pose):
     tot = 0.0
     for k in range(POSE_SHOTS):
         pred = simulate_shot_sensors(med, ta, pose_src[k], pg, bp_lo, dt, checkpointed=True)
-        mt = min(pred.shape[0], pose_obs[k].shape[0]); tot = tot + l2_loss(pred[:mt], pose_obs[k][:mt])
+        mt = min(pred.shape[0], pose_obs[k].shape[0], NW); tot = tot + l2_loss(pred[:mt], pose_obs[k][:mt])
     return tot / POSE_SHOTS
 
 def overlap(pose):
