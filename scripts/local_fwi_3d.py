@@ -59,8 +59,11 @@ if NOISE_DB > 0:
     obs = obs + nstd * jr.normal(jr.PRNGKey(7), obs.shape)
 print(f"helmet {ne} elems, {N_SHOTS} shots, {nsteps} steps, data f0={gen_f0/1e3:.0f}kHz invert {F0/1e3:.0f}kHz", flush=True)
 
-model = eqx.tree_deserialise_leaves(f"/tmp/brain_score_3d{sfx}.eqx", UNet3DScore(S, C=16, key=jr.PRNGKey(0)))
-nz = np.load(f"/tmp/brain_score_3d{sfx}_norm.npz"); SM, SS = float(nz["mean"]), float(nz["std"])
+PRIOR = os.environ.get("BFWI_PRIOR", f"/tmp/brain_score_3d{sfx}.eqx")   # override for lesion-aware prior
+NORM = os.environ.get("BFWI_NORM", PRIOR.replace(".eqx", "_norm.npz"))
+model = eqx.tree_deserialise_leaves(PRIOR, UNet3DScore(S, C=16, key=jr.PRNGKey(0)))
+nz = np.load(NORM); SM, SS = float(nz["mean"]), float(nz["std"])
+print(f"prior: {PRIOR}", flush=True)
 
 
 def forward_pred(x, sp, bp):
