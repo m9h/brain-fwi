@@ -35,13 +35,29 @@ helmet array, j-Wave forward + JAX autodiff):
    cleans the bulk inherently smooths the statistical outlier. Real next bet: a
    **conditional/data-aware prior** (sharpen where the data indicates, not regress
    to the mean), or strong measurement-guided guidance.
-2. **Skull pose from data.** A 4 vox/5° skull misalignment is **catastrophic**
-   (−400%): transcranial FWI needs near-sub-voxel skull accuracy. The SE(3) warp is
-   built and validated (exact 6-DOF recovery on an asymmetric object), but
-   **gradient descent on the j-Wave data misfit does not converge** for a 4-vox
-   misalignment — the pose-misfit landscape is non-convex and the thin skull is
-   low-frequency-invisible. Real next bet: a **global/derivative-free pose search**
-   (grid or CMA-ES, forward-only) and/or fine-only refinement atop a coarse register.
+2. **Skull pose from data — SOLVED (2026-06).** A 4 vox/5° misalignment is catastrophic
+   (−400%): transcranial FWI needs near-sub-voxel skull accuracy. Naive gradient descent,
+   coarse grid, AWI, AND derivative-free CMA-ES all fail — the *reflection* misfit is a
+   plateau with a sub-voxel needle at truth. The fix was the **observable, not the
+   optimizer**: a **transmission-traveltime misfit** (envelope cross-correlation soft-lag,
+   full waveform) is a smooth bowl, and **grid-seed-then-polish** (2D tx,ty grid →
+   translation refine → 1D rz grid → joint refine) lands the pose at **98% overlap,
+   |dt|=0.07 vox, |drz|=0.10°** from a cold start, for both known and unknown brain.
+   `scripts/run_mofi3d_transmission_staged.py`.
+
+## The complete unknown-skull → brain pipeline (2026-06, validated)
+
+From a single measurement with an *unknown* skull pose AND unknown brain, one end-to-end run
+(`scripts/run_mofi3d_pipeline.py`, GB10 job 1714): recover the pose live (transmission TT → 98%),
+then reconstruct the brain (soft-skull annealed-t DPS-FWI). At 96³: **recovered-pose +52% ≈
+truth-pose +53%** cerebrum RMSE — the recovered pose reconstructs **as well as the exact skull** —
+vs −400% if the misalignment is ignored.
+
+**Key modeling insight — never binarize the warped skull.** Binarizing a sub-voxel-accurate pose
+flips ~2% of skull voxels and that 2% destroys the recon (+18%); a SOFT/anti-aliased warp used
+consistently in the forward AND inversion (and excluded from the brain imask — the warped skull
+intrudes into roi_mask) keeps it a tiny soft difference (+52%, beating even binary-at-truth +44%).
+This is strictly more than MOFI: alignment **and** brain reconstruction at exact-skull quality.
 
 ## The Imperial comparison (MOFI, Bates et al. 2026, arXiv:2601.14533)
 
@@ -52,11 +68,10 @@ templates." It is **narrowly scoped to geometric alignment** and explicitly does
 *not* reconstruct the brain interior, handle lesions, quantify uncertainty, or use
 learned priors.
 
-**Where they are ahead:** the one piece MOFI nails — robust skull pose recovery —
-is exactly the piece our naive gradient approach *failed* at. They evidently use an
-optimization strategy that escapes the non-convex pose landscape (multiscale /
-global / a pose-robust misfit); we've characterized why the naive version fails but
-haven't yet matched their alignment.
+**Where they were ahead — now matched and exceeded:** robust skull pose recovery, which
+our naive gradient approach failed at, is now **solved** via the transmission-traveltime
+misfit (98%, sub-voxel) — and coupled with brain reconstruction in one end-to-end pipeline
+(+52% ≈ exact-skull). We do what MOFI does *plus* the downstream imaging, at exact-skull quality.
 
 **Where we do more / what they don't do (yet):**
 - **Brain-interior reconstruction** — MOFI stops at alignment; we reconstruct the
@@ -79,7 +94,12 @@ alignment (global-search MOFI) and combine it with our brain-recon + DPS + UQ** 
 strictly larger capability than either alone.
 
 ## Next
-Push forward on **global-search MOFI** (close the one gap with Imperial), which —
-combined with the credibility-tested, generalizing diffusion-prior brain recon —
-yields the complete unknown-skull → brain-image pipeline. The lesion's conditional-
-prior fix and the surrogate's Phase-0 scale-up are the subsequent research bets.
+The unknown-skull → brain pipeline is **done** (+52% ≈ exact-skull, end-to-end). Subsequent bets:
+(1) **Treeby–Cox time-domain absorption** (Phase 5) — model skull attenuation in the forward and
+inversion; the keystone for higher-fidelity transcranial FWI *and* the differentiable-FUS package
+direction (j-Wave's edge over k-Wave/Stride/BabelBrain is being differentiable end-to-end);
+(2) the lesion **conditional/data-aware prior** (the remaining recon-quality frontier);
+(3) a fresh **192³ high-res** MIDA reconstruction with the soft-skull recipe.
+
+Parked with clear findings: **FNO surrogate** (forward generalizes 0.989, but adjoint/gradient fails
+for FWI — needs gradient-aware training at scale, not a swap).
