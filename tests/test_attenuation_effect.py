@@ -75,3 +75,39 @@ def test_attenuation_changes_traces_for_skull_block():
         f"attenuation produced only {rel_l2:.4f} rel-L2 diff "
         "(expected > 5%)"
     )
+
+
+def test_attenuation_active_in_checkpointed_fwi_path():
+    """The CHECKPOINTED forward (what FWI uses for gradients) must also apply
+    absorption. It reimplements j-Wave's time loop and previously dropped the
+    Treeby-Cox term, silently disabling absorption-aware inversion while the
+    non-checkpointed path (above) worked — so the gating test passed but FWI
+    saw no attenuation. Guard the parity.
+    """
+    from brain_fwi.simulation.forward import (
+        _build_source_signal, build_domain, build_medium, build_time_axis,
+        simulate_shot_sensors,
+    )
+
+    grid = (32, 32, 32); dx = 5e-4
+    c = jnp.full(grid, 1500.0, dtype=jnp.float32)
+    rho = jnp.full(grid, 1000.0, dtype=jnp.float32)
+    skull = jnp.zeros(grid, dtype=jnp.float32).at[12:20, 12:20, 12:20].set(1.0)
+    c = jnp.where(skull > 0, 2800.0, c); rho = jnp.where(skull > 0, 1850.0, rho)
+    y = 1.1
+    dom = build_domain(grid, dx)
+    med_free = build_medium(dom, c, rho, pml_size=4, attenuation=None, alpha_power=y)
+    med_loss = build_medium(dom, c, rho, pml_size=4,
+                            attenuation=jnp.where(skull > 0, 8.0, 0.0), alpha_power=y)
+    ta = build_time_axis(med_free, cfl=0.3, t_end=2e-5)
+    dt = float(ta.dt); nt = int(2e-5 / dt)
+    sig = _build_source_signal(500e3, dt, nt)
+    src = (4, 16, 16); recv = ([28], [16], [16])
+
+    d_free = simulate_shot_sensors(med_free, ta, src, recv, sig, dt, checkpointed=True)
+    d_loss = simulate_shot_sensors(med_loss, ta, src, recv, sig, dt, checkpointed=True)
+    rel = float(jnp.linalg.norm(d_free - d_loss) / (jnp.linalg.norm(d_free) + 1e-12))
+    assert rel > 0.05, (
+        f"checkpointed FWI forward applied only {rel:.4f} rel-L2 attenuation "
+        "(expected > 5%) — absorption dropped in the checkpointed path"
+    )

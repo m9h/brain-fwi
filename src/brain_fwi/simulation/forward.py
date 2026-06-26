@@ -439,6 +439,7 @@ def _simulate_shot_sensors_checkpointed(
         momentum_conservation_rhs,
         mass_conservation_rhs,
         pressure_from_density,
+        apply_absorption_fourier,
         TimeWavePropagationSettings,
     )
     from .checkpointed_scan import checkpointed_scan
@@ -489,6 +490,10 @@ def _simulate_shot_sensors_checkpointed(
         rho_f = pml_rho * (pml_rho * rho_f + dt_val * drho)
 
         p = pressure_from_density(rho_f, medium)
+        # Treeby-Cox power-law absorption (no-op if attenuation==0). MUST mirror the
+        # non-checkpointed settings path's scan_fun — otherwise the FWI's checkpointed
+        # forward silently drops attenuation (the gating test only covers the non-ckpt path).
+        p = apply_absorption_fourier(p, medium, dt_val)
         return [p, u, rho_f], sensors(p, u, rho_f)
 
     # Run with segmented checkpointing
