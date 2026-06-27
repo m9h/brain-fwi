@@ -34,7 +34,7 @@ Usage::
     uv run python scripts/run_runpod_absorption_fwi_3d.py --print-only   # just the bash
     uv run python scripts/run_runpod_absorption_fwi_3d.py --auto     # self-terminate when done
 
-Cost: B200 ~\$4-6/hr on RunPod; a 192^3 3-band A/B is roughly 2-5 h ⇒ ~\$10-30.
+Cost: B200 ~$4-6/hr on RunPod; a 192^3 3-band A/B is roughly 2-5 h => ~$10-30.
 Cap with --auto (terminates on completion) and watch the dashboard.
 """
 
