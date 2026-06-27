@@ -96,6 +96,16 @@ class FWIConfig:
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
     skip_bandpass: bool = False
+
+    # --- Absorption-aware FWI ---
+    # Known, FIXED power-law attenuation field (dB/cm/MHz^alpha_power), e.g.
+    # derived from a CT skull. Folded into the forward medium each iteration
+    # (Treeby-Cox absorbing EoS) so the inversion matches the attenuated
+    # waveforms instead of (wrongly) explaining the missing amplitude with
+    # velocity structure. None = lossless (default, unchanged behaviour). Only
+    # velocity is inverted; alpha is held fixed.
+    attenuation: Optional[jnp.ndarray] = None
+    alpha_power: float = 1.5
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
     verbose: bool = True
@@ -536,7 +546,10 @@ def run_fwi(
 
                 def single_shot_loss(velocity, _src_pos=src_pos, _obs=obs):
                     domain = build_domain(grid_shape, dx)
-                    medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
+                    medium = build_medium(
+                        domain, velocity, density, pml_size=config.pml_size,
+                        attenuation=config.attenuation, alpha_power=config.alpha_power,
+                    )
                     pred = simulate_shot_sensors(
                         medium, fixed_time_axis, _src_pos, sensor_positions_grid,
                         bp_signal, dt, checkpointed=use_checkpoint,
@@ -699,7 +712,10 @@ def _run_fwi_siren(
                 def single_shot_loss(f, _src_pos=src_pos, _obs=obs):
                     velocity = f.to_velocity(config.c_min, config.c_max)
                     domain = build_domain(grid_shape, dx)
-                    medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
+                    medium = build_medium(
+                        domain, velocity, density, pml_size=config.pml_size,
+                        attenuation=config.attenuation, alpha_power=config.alpha_power,
+                    )
                     pred = simulate_shot_sensors(
                         medium, fixed_time_axis, _src_pos, sensor_positions_grid,
                         bp_signal, dt, checkpointed=use_checkpoint,

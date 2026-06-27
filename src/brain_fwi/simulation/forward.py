@@ -348,6 +348,8 @@ def generate_observed_data(
     time_axis=None,
     source_signal: Optional[jnp.ndarray] = None,
     dt: Optional[float] = None,
+    attenuation: Union[float, jnp.ndarray, None] = None,
+    alpha_power: float = 1.5,
     verbose: bool = True,
 ) -> jnp.ndarray:
     """Generate synthetic observed data for all source-receiver pairs.
@@ -373,6 +375,10 @@ def generate_observed_data(
         time_axis: Pre-computed TimeAxis. None = compute from medium.
         source_signal: Pre-computed source wavelet. None = build Ricker.
         dt: Time step matching source_signal. Required if source_signal given.
+        attenuation: Scalar/array power-law absorption (dB/cm/MHz^alpha_power)
+            for the data-generating medium. None = lossless. Use this to make
+            ``observed`` data carry true skull absorption.
+        alpha_power: Power-law exponent for ``attenuation``.
         verbose: Print progress.
 
     Returns:
@@ -380,7 +386,10 @@ def generate_observed_data(
     """
     grid_shape = sound_speed.shape
     domain = build_domain(grid_shape, dx)
-    medium = build_medium(domain, sound_speed, density, pml_size=pml_size)
+    medium = build_medium(
+        domain, sound_speed, density, pml_size=pml_size,
+        attenuation=attenuation, alpha_power=alpha_power,
+    )
 
     if time_axis is None:
         time_axis = build_time_axis(medium, cfl=cfl, t_end=t_end)

@@ -110,13 +110,40 @@ Tests: `tests/test_attenuation_effect.py` —
 `test_attenuation_active_in_checkpointed_fwi_path` (FWI path applies it),
 `test_attenuation_decay_rate_matches_analytic` (bulk-decay rate guard).
 
+### Absorption-aware FWI demo — done
+
+`examples/05_absorption_aware_fwi.py`. The clinical setup: the skull (geometry,
+density, **and** α) is known from CT, so we hold it FIXED and image the brain
+*through* it. Freezing the skull is what makes this a clean test — the
+skull-transmission amplitude can only be explained by modeling α, so the
+absorption term has nowhere to hide (an earlier attempt that left the skull *in*
+the inversion mask gave a null result: the skull velocity soaked up the
+amplitude error and both runs converged to the same misfit floor).
+
+Two 2D ring-array runs reconstruct two brain sound-speed anomalies from an
+identical start (homogeneous brain, true skull); the only difference is whether
+the known α is in the forward model:
+
+| run | brain-ROI RMSE (m/s) | data misfit |
+|-----|----------------------|-------------|
+| start (homogeneous brain) | 22.2 | — |
+| lossless forward | 51.2 | 6.06e-7 |
+| absorption-aware (known α) | 13.5 | 2.87e-7 |
+
+The lossless run ends **worse than the start** — it back-projects the unmodeled
+absorption deficit into concentric ring artifacts — while the known-α forward
+recovers the anomalies cleanly at half the misfit floor (**−74% brain RMSE,
+−53% misfit**). Ignoring known skull absorption doesn't just fail to help, it
+actively corrupts the reconstruction. Plumbing: `FWIConfig.attenuation` /
+`alpha_power` (and `generate_observed_data(attenuation=…)`) thread a fixed α
+field through the FWI forward; guarded by `tests/test_absorption_aware_fwi.py`
+(mechanism + run_fwi plumbing).
+
 ### What's next on this front
 
 - **Upstream PR.** Fork commits (configurable-alpha-power +
   time-domain-absorption with the canonical EoS) are clean, additive,
-  backwards-compatible. Open `m9h/jwave → ucl-bug/jwave` after an FWI demo.
-- **Absorption-aware FWI demo.** The forward + adjoint now carry correct
-  attenuation; invert a skull with known α to show it improves the recon.
+  backwards-compatible. Open `m9h/jwave → ucl-bug/jwave` (demo now in hand).
 - **`alpha_mode` as a Medium attribute.** Promote the `JWAVE_ABSORPTION_ONLY`
   env escape hatch to a proper `Medium.alpha_mode` field (k-Wave parity).
 - **OnGrid path.** Left untouched (brain-fwi routes through FourierSeries).

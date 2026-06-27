@@ -101,8 +101,16 @@ equation of state (loss folded into the constitutive p(ρ,u), not a non-accumula
 of the diagnostic pressure — the earlier bug). j-Wave matches k-Wave **bit-for-bit** on homogeneous
 power-law decay across absorption strengths (absorption-only and with-dispersion), with `jax.grad`
 flowing through — the differentiable-FUS edge over k-Wave/Stride/BabelBrain. See
-`docs/design/phase5_treeby_cox_absorption.md` + `scripts/kwave_absorption_xcheck.py`. Next here:
-an absorption-aware FWI demo (invert a known-α skull). (2) the lesion **conditional/data-aware
+`docs/design/phase5_treeby_cox_absorption.md` + `scripts/kwave_absorption_xcheck.py`.
+**Absorption-aware FWI demo — done.** `examples/05_absorption_aware_fwi.py` images two brain
+sound-speed anomalies through a *frozen, known* skull (c, ρ, α from CT); the only difference
+between the two runs is whether the known α is in the forward model. Freezing the skull is what
+makes it a clean test — the skull-transmission amplitude can only be explained by modeling α.
+Result: lossless FWI back-projects the unmodeled absorption deficit into ring artifacts and ends
+*worse than the start* (brain-ROI RMSE 22→51); the known-α forward recovers the anomalies cleanly
+(22→13.5) at half the misfit floor — **−74% brain RMSE, −53% data misfit vs lossless**. The fix is
+not cosmetic: ignoring known skull absorption actively corrupts the brain reconstruction. `FWIConfig.attenuation`/`alpha_power` thread a fixed α field through the FWI forward
+(`tests/test_absorption_aware_fwi.py`). (2) the lesion **conditional/data-aware
 prior** (the remaining recon-quality frontier); (3) a fresh **192³ high-res** MIDA reconstruction
 with the soft-skull recipe.
 
