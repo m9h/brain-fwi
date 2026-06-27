@@ -1,11 +1,19 @@
 # Phase 5 — absorption integration plan
 
-**Status (2026-04-29):**
+**Status (2026-06-27):**
 
 | Layer | Status |
 |---|---|
 | Frequency-domain (Helmholtz) absorption with configurable y | ✅ working — `m9h/jwave@feature/configurable-alpha-power` |
-| Time-domain (`simulate_wave_propagation`) absorption | ✅ working — `m9h/jwave@feature/time-domain-absorption` |
+| Time-domain (`simulate_wave_propagation`) absorption | ✅ **correct + k-Wave-validated** — `m9h/jwave@feature/time-domain-absorption` (canonical Treeby-Cox EoS; see "Time-domain absorption" below) |
+
+> **2026-06-27 — the time-domain absorption is now physically correct and
+> cross-validated against k-Wave.** The earlier "done" entry described a
+> per-step decay of the diagnostic pressure that did NOT accumulate (a
+> homogeneous plane wave lost ~0 amplitude; only edge-scattering changed the
+> traces, which is why the >5% gating test still passed). It is replaced by the
+> canonical Treeby-Cox *absorbing equation of state*, which matches k-Wave
+> bit-for-bit across absorption strengths. Details in the rewritten section below.
 
 This document captures the implementation roadmap for the time-domain
 half. The frequency-domain half is already unblocked: `m9h/jwave`
@@ -32,51 +40,90 @@ The y=1.1 row is what `Phase 5`'s CANN α(ω) needs to plug into.
 y=2 alone produced systematically wrong-by-~2× attenuation
 magnitudes for tissue (see commit 92f8e1dc on the fork).
 
-## Time-domain absorption: done (FourierSeries path)
+## Time-domain absorption: correct + k-Wave-validated (FourierSeries path)
 
-Gating test now PASSES:
-```
-tests/test_attenuation_effect.py::test_attenuation_changes_traces_for_skull_block PASSED
-```
-8 dB/cm/MHz^1.1 in a 4 mm skull block, 500 kHz Ricker → ~13 % rel-L2
-between lossy and lossless 32³ traces. The `pytest.mark.xfail(strict=True)`
-decorator has been removed.
+### The bug in the first attempt (per-step decay of the diagnostic pressure)
 
-Implementation: a single new function ``apply_absorption_fourier`` in
-`jwave/acoustics/time_varying.py` that integrates the per-step
-absorption term
+The first implementation (`apply_absorption_fourier`) integrated, after
+`pressure_from_density`, a per-step Euler decay
 
-    ∂p/∂t ⊃ -α₀ · c^(y+1) · (-∇²)^(y/2) p
+    p ← p − dt · α₀ · c^(y+1) · (-∇²)^(y/2) p .
 
-via FFT, wired into the FourierSeries `scan_fun` symplectic step right
-after `pressure_from_density`. No-op when `medium.attenuation` is
-zero or unset, so existing lossless callers are unchanged.
+It passed the >5% gating test but a homogeneous plane wave **lost ~0
+amplitude** (measured `alpha_meas/analytic ≈ 0` across frequencies). Root
+cause: `p` is a **diagnostic** field — every step recomputes
+`p = pressure_from_density(rho)` from the persistent `(u, rho)` state, so the
+decay applied to `p` survives only one step (feeding the next momentum gradient,
+an O(dt²) effect) and never accumulates. The >5% the gating test saw came
+purely from edge-scattering at heterogeneities, not bulk decay. So absorption
+was effectively disabled in both the forward and the (FWI) checkpointed paths.
 
-This drops Treeby–Cox 2010 eq 11's `1/sin(π y / 2)` pole (so the
-operator is defined at y = 2) and reshapes the spectral exponent
-from `(y+1)/2` to `y/2`. The two forms agree on plane-wave decay
-rate in homogeneous media and match the frequency-domain wavevector
-op's `Im(k) = α(ω) = α₀ω^y` to leading order in α.
+### The fix: canonical Treeby-Cox absorbing equation of state
 
-OnGrid path is left untouched; brain-fwi's `build_medium` routes
-through FourierSeries by default.
+Replaced by `absorbing_pressure_from_density(rho, u, medium, c_ref, dt, params)`
+— the loss is folded into the **constitutive** pressure relation, evaluated
+fresh from the persistent state each step, exactly as k-Wave's
+`kspaceFirstOrder` does (Treeby & Cox, *JASA* 127(5):2741, 2010):
+
+    p = c0² ( ρ
+              + τ · (-∇²)^((y-2)/2) [ρ0 · ∇·u]      ← absorption
+              − η · (-∇²)^((y-1)/2) [ρ] )           ← dispersion (Kramers-Kronig)
+
+with τ = −2 α₀ c0^(y-1), η = 2 α₀ c0^y tan(πy/2), α₀ from k-Wave's `db2neper`
+(dB/cm/MHz^y → Np·m⁻¹·(rad/s)⁻ʸ, ω_ref = 2π·10⁶), and the `|k|^(y-2)` operator's
+k=0 component zeroed. The absorption term is driven by the velocity divergence
+`ρ0·∇·u = −∂ρ/∂t` (supplying the ∂/∂t of the loss operator), obtained from
+`mass_conservation_rhs(rho, u, 0, …)`. The factor of 2 in τ,η is the standard
+"loss in the EoS only" convention. No-op (exact lossless EoS) when
+`medium.attenuation` is zero/unset, so lossless callers are byte-identical.
+
+Wired into BOTH time loops: the fork's settings-path `scan_fun`, and
+brain-fwi's `_simulate_shot_sensors_checkpointed` (the FWI gradient path) —
+they give bit-identical decay rates, and `jax.grad` flows through (absorption-
+aware inversion is differentiable). Set `JWAVE_ABSORPTION_ONLY=1` to drop the
+dispersion term (mirrors k-Wave's `alpha_mode="no_dispersion"`).
+
+### k-Wave cross-validation (the proof it's right)
+
+Same homogeneous power-law-absorber problem run in BOTH solvers (192×48×48,
+dx 0.25 mm, 500 kHz, 12 ppw), CW lock-in decay slope vs analytic
+`α(f)=a_db·(f/1e6)^y`. `scripts/kwave_absorption_xcheck.py` (k-Wave's pure-Python
+backend, ARM-OK) vs j-Wave (`tests/test_attenuation_effect.py`,
+`scripts/absorption_validate.py`):
+
+| a_db | absorption-only jWave / k-Wave | with-dispersion jWave / k-Wave |
+|---|---|---|
+| 1.5  | 1.082 / 1.082 | 1.023 / 1.021 |
+| 6.0  | 1.074 / 1.074 | 0.868 / 0.870 |
+| 12.0 | 1.062 / 1.061 | 0.741 / 0.741 |
+
+**j-Wave matches k-Wave bit-for-bit in both modes.** The shared >1 offset is a
+CW-lock-in metric bias; the with-dispersion droop at high a_db is the
+lossy-vs-lossless sound-speed-mismatch in the *ratio measurement* (the lossy
+medium's c(ω) is shifted), not a physics error — k-Wave shows the identical
+droop. The coefficient is exact: ratio → 1 as a_db → 0. This is the
+differentiable-FUS edge — a Treeby-Cox solver matching k-Wave *and* end-to-end
+autodiff for FWI.
+
+Tests: `tests/test_attenuation_effect.py` —
+`test_attenuation_changes_traces_for_skull_block` (gating),
+`test_attenuation_active_in_checkpointed_fwi_path` (FWI path applies it),
+`test_attenuation_decay_rate_matches_analytic` (bulk-decay rate guard).
 
 ### What's next on this front
 
-- **Upstream PR.** Both fork commits (configurable-alpha-power +
-  time-domain-absorption) are clean, additive, backwards-compatible.
-  Open a PR `m9h/jwave → ucl-bug/jwave` once we've shipped one or
-  two FWI experiments through this stack.
-- **Optional dispersion term.** The companion `L_η ∂p/∂t` was
-  intentionally skipped — phase-velocity dispersion is supplied at
-  the constitutive layer via Kramers–Kronig and a frequency-dependent
-  `sound_speed`. If that strategy proves insufficient (e.g. residual
-  phase error in inversion), add `L_η`.
-- **OnGrid path.** Left untouched. Add the same hook if any caller
-  needs the OnGrid solver.
-- **CFL adjustment.** Treeby–Cox §IV recommends a `~(0.9)^(2-y)`
-  factor on `dt`. Not yet applied; `build_time_axis` ignores `y`.
-  Add if stability issues surface at large y or coarse grids.
+- **Upstream PR.** Fork commits (configurable-alpha-power +
+  time-domain-absorption with the canonical EoS) are clean, additive,
+  backwards-compatible. Open `m9h/jwave → ucl-bug/jwave` after an FWI demo.
+- **Absorption-aware FWI demo.** The forward + adjoint now carry correct
+  attenuation; invert a skull with known α to show it improves the recon.
+- **`alpha_mode` as a Medium attribute.** Promote the `JWAVE_ABSORPTION_ONLY`
+  env escape hatch to a proper `Medium.alpha_mode` field (k-Wave parity).
+- **OnGrid path.** Left untouched (brain-fwi routes through FourierSeries).
+  Mirror the EoS hook there if any caller needs the OnGrid solver.
+- **CFL adjustment.** Treeby–Cox §IV recommends a `~(0.9)^(2-y)` factor on
+  `dt`; not yet applied. Add if stability issues surface at large y / coarse
+  grids (k-Wave's absorbing stability limit also tightens dt at high kmax).
 
 ### Where the work lands: m9h/jwave fork (sibling commit)
 

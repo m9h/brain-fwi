@@ -95,11 +95,16 @@ strictly larger capability than either alone.
 
 ## Next
 The unknown-skull → brain pipeline is **done** (+52% ≈ exact-skull, end-to-end). Subsequent bets:
-(1) **Treeby–Cox time-domain absorption** (Phase 5) — model skull attenuation in the forward and
-inversion; the keystone for higher-fidelity transcranial FWI *and* the differentiable-FUS package
-direction (j-Wave's edge over k-Wave/Stride/BabelBrain is being differentiable end-to-end);
-(2) the lesion **conditional/data-aware prior** (the remaining recon-quality frontier);
-(3) a fresh **192³ high-res** MIDA reconstruction with the soft-skull recipe.
+(1) ✅ **Treeby–Cox time-domain absorption** (Phase 5) — **done + k-Wave-validated (2026-06-27).**
+The forward AND the FWI checkpointed/adjoint path now apply the canonical Treeby-Cox absorbing
+equation of state (loss folded into the constitutive p(ρ,u), not a non-accumulating per-step decay
+of the diagnostic pressure — the earlier bug). j-Wave matches k-Wave **bit-for-bit** on homogeneous
+power-law decay across absorption strengths (absorption-only and with-dispersion), with `jax.grad`
+flowing through — the differentiable-FUS edge over k-Wave/Stride/BabelBrain. See
+`docs/design/phase5_treeby_cox_absorption.md` + `scripts/kwave_absorption_xcheck.py`. Next here:
+an absorption-aware FWI demo (invert a known-α skull). (2) the lesion **conditional/data-aware
+prior** (the remaining recon-quality frontier); (3) a fresh **192³ high-res** MIDA reconstruction
+with the soft-skull recipe.
 
 Parked with clear findings: **FNO surrogate** (forward generalizes 0.989, but adjoint/gradient fails
 for FWI — needs gradient-aware training at scale, not a swap).

@@ -438,8 +438,7 @@ def _simulate_shot_sensors_checkpointed(
         fourier_wave_prop_params,
         momentum_conservation_rhs,
         mass_conservation_rhs,
-        pressure_from_density,
-        apply_absorption_fourier,
+        absorbing_pressure_from_density,
         TimeWavePropagationSettings,
     )
     from .checkpointed_scan import checkpointed_scan
@@ -489,11 +488,13 @@ def _simulate_shot_sensors_checkpointed(
         )
         rho_f = pml_rho * (pml_rho * rho_f + dt_val * drho)
 
-        p = pressure_from_density(rho_f, medium)
-        # Treeby-Cox power-law absorption (no-op if attenuation==0). MUST mirror the
-        # non-checkpointed settings path's scan_fun — otherwise the FWI's checkpointed
-        # forward silently drops attenuation (the gating test only covers the non-ckpt path).
-        p = apply_absorption_fourier(p, medium, dt_val)
+        # Treeby-Cox power-law absorbing equation of state (reduces to lossless
+        # c0**2*sum(rho) when attenuation==0). MUST mirror the fork's settings-path
+        # scan_fun — the FWI gradient flows through this path, so absorption is folded
+        # into the constitutive p(rho,u) here rather than decaying a diagnostic p
+        # (which would never accumulate). Drives a true absorption-aware inversion.
+        p = absorbing_pressure_from_density(
+            rho_f, u, medium, c_ref=c_ref, dt=dt_val, params=params["fourier"])
         return [p, u, rho_f], sensors(p, u, rho_f)
 
     # Run with segmented checkpointing
