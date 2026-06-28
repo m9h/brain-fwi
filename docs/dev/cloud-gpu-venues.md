@@ -12,6 +12,38 @@ many sequential solves, autodiff through the solver).
 | Small FWI (≤64³) | **GB10** if free, else **beam** | Both quick. |
 | Large FWI (96³+) | **beam** (RTX4090/A10G), or **GB10** when the node is free | beam: no timeout, doesn't block the GB10 (see below). GB10: faster but contends with hbn. |
 | Huge FWI (192³, multi-GPU) | **GB10**, or beam on-demand A100/H100 (needs account upgrade) | Memory + speed. |
+| Top-end single-GPU FWI (192³+, no Station) | **RunPod B200 pod** | 183 GB HBM3e, no timeout; see below. |
+
+## RunPod B200 — validated for top-end FWI (2026-06)
+
+When a DGX Station (GB300/ARM) isn't available, a single **RunPod B200** pod is the
+accessible top-end. Validated end-to-end on the 3D absorption-aware demo
+(`scripts/run_runpod_absorption_fwi_3d.py`, `examples/06_absorption_aware_fwi_3d.py`):
+
+- **jax-on-Blackwell works.** B200 is `sm_100`; the pod driver was 580.126 ⇒
+  `nvidia-smi` reports CUDA 13, so the workload installs `.[cuda13]` and
+  `jax.default_backend()=='gpu'` — no special handling. (cuda13 is the right
+  extra for Blackwell; cuda12 wheels may lag.)
+- **Fully utilized at 192³.** Sampled live: **97–98 % GPU, ~138/183 GB, ~830 W.**
+  Confirms the dispatch-bound→bandwidth-bound transition: small grids (48–96³)
+  leave the card idle; 192³ saturates it. Resolution is the lever.
+- **Timing:** a 192³, 3-band, 12-iter, 12-shot **A/B** (lossless vs known-α) ran
+  ~93 min + ~138 min ≈ **3.9 h**; ~$5.89/hr ⇒ ~$23 compute (~$33 incl. setup/idle).
+- **Provisioning:** `runpod.create_pod(gpu_type_id="NVIDIA B200", ...)`, inject the
+  user's pubkey via `env={"PUBLIC_KEY": ...}`, image
+  `runpod/pytorch:2.4.0-...cuda12.4.1...` is fine (jax bundles its own CUDA).
+  H200 (`NVIDIA H200`, 141 GB, $3.59–4.39) is the cheaper, fully-jax-supported
+  fallback.
+
+### B200/RunPod gotchas (cost real time)
+- **Block-buffered logs.** `nohup python ... > log` buffers stdout; the
+  per-iteration lines don't appear until the process exits. **Always launch with
+  `PYTHONUNBUFFERED=1`** (or `python -u`) so progress streams.
+- **No `ptrace` in the container** — py-spy/strace fail with "Permission denied",
+  so you can't introspect a running process's stack. Combined with buffering,
+  the only mid-run signals are `nvidia-smi` + elapsed time. Unbuffer up front.
+- **scp port is `-P`, not `-p`** (`-p` = preserve-times and silently mangles args).
+- The key lives at `~/.runpod_key` (read it inline; never echo it).
 
 ## The three venues
 

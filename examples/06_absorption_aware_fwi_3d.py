@@ -176,19 +176,25 @@ def main():
     ap.add_argument("--subject", type=int, default=0)
     ap.add_argument("--sources", type=int, default=None)
     ap.add_argument("--iters", type=int, default=None)
+    ap.add_argument("--smooth", type=float, default=None,
+                    help="gradient-smoothing sigma (grid pts); overrides preset")
+    ap.add_argument("--precondition", action="store_true",
+                    help="pseudo-Hessian illumination precond (OFF by default — it "
+                         "amplifies deep-brain noise into speckle at high res)")
     args = ap.parse_args()
 
     if args.smoke:
-        N, n_elem, n_src, n_iters, bands, shots = 48, 32, 4, 2, [(40e3, 80e3)], 4
+        N, n_elem, n_src, n_iters, bands, shots, smooth = 48, 32, 4, 2, [(40e3, 80e3)], 4, 1.0
     elif args.full:
-        N, n_elem, n_src, n_iters = 192, 256, 32, 12
+        N, n_elem, n_src, n_iters, smooth = 192, 256, 32, 14, 2.0
         bands, shots = [(50e3, 100e3), (100e3, 180e3), (180e3, 280e3)], 12
     else:
-        N, n_elem, n_src, n_iters = 96, 160, 16, 10
+        N, n_elem, n_src, n_iters, smooth = 96, 160, 16, 10, 1.5
         bands, shots = [(50e3, 100e3), (100e3, 160e3)], 8
     if args.n: N = args.n
     if args.sources: n_src = args.sources
     if args.iters: n_iters = args.iters
+    if args.smooth is not None: smooth = args.smooth
 
     out = Path("results/absorption_aware_fwi_3d"); out.mkdir(parents=True, exist_ok=True)
     f0 = max(fmax for _, fmax in bands)
@@ -234,7 +240,7 @@ def main():
     common = dict(
         freq_bands=bands, n_iters_per_band=n_iters, shots_per_iter=shots,
         learning_rate=30.0, c_min=C_MIN, c_max=C_MAX, pml_size=8, cfl=0.3,
-        gradient_smooth_sigma=1.0, mask=mask_j, precondition=True,
+        gradient_smooth_sigma=smooth, mask=mask_j, precondition=args.precondition,
         loss_fn="l2", verbose=True,
     )
 
