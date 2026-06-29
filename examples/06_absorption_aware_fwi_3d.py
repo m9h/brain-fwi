@@ -121,6 +121,54 @@ def synthetic_head(N, fov_m=0.22):
     return _lut(C_MAP, lab), _lut(RHO_MAP, lab), _lut(A_MAP, lab), lab, dx
 
 
+MIDA_HEAD_PATH = "/data/datasets/MIDAv1-0/MIDA_v1.0/MIDA_v1_voxels/MIDA_v1.nii"
+
+
+def load_mida_head(N, mida_path=MIDA_HEAD_PATH, margin_mm=20.0):
+    """Crop the cranial vault from the MIDA ITRUSST head (480^3 @ 0.5 mm) and
+    resample to N^3. Real 3-layer skull (cortical tables + trabecular diploe) +
+    intracranial brain/CSF/ventricles/vessels from MIDA's acoustic mapping;
+    water coupling outside the skull+brain. Returned in the Birnbaum label
+    scheme (5=skull, 2=brain) so the rest of the demo is unchanged."""
+    from brain_fwi.phantoms.mida import (
+        load_mida_volume, map_mida_labels_to_acoustic, MIDA_TISSUE_GROUPS)
+    g = MIDA_TISSUE_GROUPS
+    skull_labels = list(set(g.get("cortical_bone", [])) | set(g.get("trabecular_bone", [])))
+    brain_labels = []
+    for grp in ("grey_matter", "white_matter", "csf", "blood_vessels", "dura"):
+        brain_labels += g.get(grp, [])
+    vol = np.asarray(load_mida_volume(Path(mida_path)))                 # 0.5 mm voxels
+    skull = np.isin(vol, skull_labels)
+    soft = np.isin(vol, brain_labels)                                   # intracranial soft tissue
+    # Crop bbox from the cerebral PARENCHYMA mass only (GM+WM) so the brainstem /
+    # spinal CSF sprawl doesn't inflate the cube -> keeps dx fine.
+    parench = np.isin(vol, list(set(g.get("grey_matter", [])) | set(g.get("white_matter", []))))
+    lab, n = cc_label(parench)
+    if n > 1:
+        sizes = np.bincount(lab.ravel()); sizes[0] = 0
+        parench = lab == int(sizes.argmax())
+
+    xs, ys, zs = np.where(parench)
+    ctr = np.array([xs.mean(), ys.mean(), zs.mean()])
+    half = max(np.ptp(xs), np.ptp(ys), np.ptp(zs)) / 2.0 + margin_mm / 0.5
+    lo = np.maximum(np.floor(ctr - half).astype(int), 0)
+    hi = np.minimum(np.ceil(ctr + half).astype(int), np.array(vol.shape))
+    sub = lambda a: a[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+    fac = [N / s for s in sub(vol).shape]
+    lab_n = zoom(sub(vol), fac, order=0).astype(np.int32)
+    skn = zoom(sub(skull).astype(np.float32), fac, order=0) > 0.5
+    brn = zoom(sub(soft).astype(np.float32), fac, order=0) > 0.5
+
+    props = map_mida_labels_to_acoustic(lab_n)
+    inside = skn | brn
+    c = np.where(inside, np.asarray(props["sound_speed"]), 1500.0).astype(np.float32)
+    rho = np.where(inside, np.asarray(props["density"]), 1000.0).astype(np.float32)
+    alpha = np.where(inside, np.asarray(props["attenuation"]), 0.0).astype(np.float32)
+    geom = np.zeros((N, N, N), np.int32); geom[brn] = 2; geom[skn] = 5
+    dx = (float((hi - lo).max()) * 0.5 / N) * 1e-3
+    return c, rho, alpha, geom, dx
+
+
 def brain_roi(labels):
     """Largest connected brain+lesion component, eroded 1 voxel off the skull."""
     roi = np.isin(labels, B.BRAIN) | (labels == B.LESION)
@@ -170,8 +218,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--smoke", action="store_true", help="tiny fast end-to-end check")
     ap.add_argument("--full", action="store_true", help="192^3 preset (top-end GPU)")
-    ap.add_argument("--phantom", choices=["birnbaum", "synthetic"], default="birnbaum",
-                    help="synthetic = self-contained head, safe for cloud (no patient data)")
+    ap.add_argument("--phantom", choices=["birnbaum", "synthetic", "mida"], default="birnbaum",
+                    help="synthetic = self-contained (cloud-safe); mida = ITRUSST head; "
+                         "birnbaum = real patient (+lesion). mida/birnbaum are local data only.")
     ap.add_argument("--n", type=int, default=None, help="grid size override")
     ap.add_argument("--subject", type=int, default=0)
     ap.add_argument("--sources", type=int, default=None)
@@ -209,6 +258,9 @@ def main():
     if args.phantom == "synthetic":
         print(f"[1/4] Building synthetic anatomical head -> {N}^3 ...")
         c_true, rho_true, alpha_true, labels, dx = synthetic_head(N)
+    elif args.phantom == "mida":
+        print(f"[1/4] Loading MIDA ITRUSST head -> {N}^3 ...")
+        c_true, rho_true, alpha_true, labels, dx = load_mida_head(N)
     else:
         print(f"[1/4] Loading real head (Birnbaum subj {args.subject}) -> {N}^3 ...")
         c_true, rho_true, alpha_true, labels, dx = load_head(N, args.subject)
