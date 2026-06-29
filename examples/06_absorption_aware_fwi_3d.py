@@ -179,22 +179,29 @@ def main():
     ap.add_argument("--smooth", type=float, default=None,
                     help="gradient-smoothing sigma (grid pts); overrides preset")
     ap.add_argument("--precondition", action="store_true",
-                    help="pseudo-Hessian illumination precond (OFF by default — it "
-                         "amplifies deep-brain noise into speckle at high res)")
+                    help="force tempered pseudo-Hessian preconditioning on")
+    ap.add_argument("--precond-floor", type=float, default=0.05,
+                    help="illumination water-level (frac of peak); ~0.05 tempers "
+                         "periphery-ring vs deep-brain-speckle at high res")
     args = ap.parse_args()
 
+    # precond: OFF at low res (uniform illumination -> clean without it); tempered
+    # ON at 192^3, where un-preconditioned gradients over-update the bright
+    # near-skull periphery into a ring (and full normalisation speckles the
+    # deep brain) -- the water-level floor balances the two.
     if args.smoke:
-        N, n_elem, n_src, n_iters, bands, shots, smooth = 48, 32, 4, 2, [(40e3, 80e3)], 4, 1.0
+        N, n_elem, n_src, n_iters, bands, shots, smooth, precond = 48, 32, 4, 2, [(40e3, 80e3)], 4, 1.0, False
     elif args.full:
-        N, n_elem, n_src, n_iters, smooth = 192, 256, 32, 14, 2.0
+        N, n_elem, n_src, n_iters, smooth, precond = 192, 256, 32, 14, 2.0, True
         bands, shots = [(50e3, 100e3), (100e3, 180e3), (180e3, 280e3)], 12
     else:
-        N, n_elem, n_src, n_iters, smooth = 96, 160, 16, 10, 1.5
+        N, n_elem, n_src, n_iters, smooth, precond = 96, 160, 16, 10, 1.5, False
         bands, shots = [(50e3, 100e3), (100e3, 160e3)], 8
     if args.n: N = args.n
     if args.sources: n_src = args.sources
     if args.iters: n_iters = args.iters
     if args.smooth is not None: smooth = args.smooth
+    precond = precond or args.precondition
 
     out = Path("results/absorption_aware_fwi_3d"); out.mkdir(parents=True, exist_ok=True)
     f0 = max(fmax for _, fmax in bands)
@@ -240,8 +247,8 @@ def main():
     common = dict(
         freq_bands=bands, n_iters_per_band=n_iters, shots_per_iter=shots,
         learning_rate=30.0, c_min=C_MIN, c_max=C_MAX, pml_size=8, cfl=0.3,
-        gradient_smooth_sigma=smooth, mask=mask_j, precondition=args.precondition,
-        loss_fn="l2", verbose=True,
+        gradient_smooth_sigma=smooth, mask=mask_j, precondition=precond,
+        precondition_floor=args.precond_floor, loss_fn="l2", verbose=True,
     )
 
     def fwi(attenuation, tag):

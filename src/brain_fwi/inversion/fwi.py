@@ -108,6 +108,14 @@ class FWIConfig:
     alpha_power: float = 1.5
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
+    # Illumination "water level" for preconditioning, as a fraction of peak
+    # illumination. The gradient is divided by ``illum + precondition_floor *
+    # max(illum)``. A near-zero floor (the old 1e-12) fully normalises every
+    # voxel, which AMPLIFIES noise in the poorly-lit deep brain into speckle;
+    # too large a floor under-corrects the bright near-skull periphery, leaving
+    # a ring. ~0.05 (5 %) tempers both — normalise the periphery, damp (not
+    # amplify) the interior. Default preserves the old full-normalisation.
+    precondition_floor: float = 1e-12
     verbose: bool = True
 
     # --- Parameterisation ---
@@ -573,7 +581,7 @@ def run_fwi(
             # get tiny gradients. Standard in geophysical FWI (Shin 2001).
             if config.precondition:
                 illum = jnp.sqrt(grad_sq_accum / n_shots)
-                grad = grad / (illum + 1e-12 * jnp.max(illum))
+                grad = grad / (illum + config.precondition_floor * jnp.max(illum))
 
             # Process gradient
             if config.gradient_smooth_sigma > 0:
