@@ -20,9 +20,42 @@ than a fixed 256.
   factor — but therapy-focused (superior, convergent), so as an *imaging* array
   it under-samples the anterior/inferior transmission paths FWI wants.
 
-**Takeaway:** adopt Insightec's manufacturable hemispherical-shell + water-
-coupling form factor, but extend coverage toward Guasch's full-azimuth
-encirclement for transmission tomography.
+- **Stagg (Oxford) + Treeby (UCL) neuromodulation helmet** — *Ultrasound system
+  for precise neuromodulation of human deep brain circuits*, Nat. Commun. 2025.
+  A **256-element helmet-shaped phased array at 555 kHz**, MR-compatible
+  (real-time fMRI monitoring), with stereotactic positioning + **individualised
+  k-Wave treatment planning**; focuses to deep targets ~1000× smaller than
+  conventional TUS. This is the **most directly relevant real device**: a
+  recent UK MR-compatible helmet, built by the **k-Wave** author (our absorption
+  validation reference and the j-Wave lineage). It is a *therapy/neuromodulation*
+  array (steered focusing to a point), not an imaging array — but the hardware
+  (256-element MR-compatible helmet, 555 kHz, water/gel coupling) is exactly a
+  form factor we can model, and its planning stack is k-Wave (= differentiable
+  j-Wave's non-differentiable sibling).
+
+**Takeaway:** adopt the Insightec/Stagg-Treeby manufacturable helmet-shell +
+water-coupling + MR-compatibility, but extend coverage toward Guasch's
+full-azimuth encirclement so the *same* hardware supports transmission imaging.
+
+## Dual-use vision: one helmet, image + neuromodulate
+
+The Stagg-Treeby (therapy) and Guasch (imaging) helmets are the two halves of a
+single device. A phased array can both **transmit/receive for FWI imaging** and
+**focus for neuromodulation**. The compelling, fundable loop:
+
+1. **Image** the brain + skull with differentiable FWI (this project) →
+   patient-specific acoustic model.
+2. **Plan** the neuromodulation focus through that model. Stagg-Treeby use
+   **k-Wave** here; **differentiable j-Wave** adds gradient-based focusing /
+   aberration correction and **uncertainty-aware targeting** (how skull-pose /
+   property error moves the focus — the MAITE robustness harness, applied to
+   *targeting* error instead of recon error).
+3. **Stimulate**, **monitor** with fMRI, close the loop.
+
+This positions brain-fwi as the *imaging + differentiable-planning* front end to
+exactly the MR-compatible helmet the UK TUS programme is already building — and
+the k-Wave↔j-Wave bridge (already validated bit-for-bit on absorption) is the
+natural collaboration surface.
 
 ## Coverage relative to the head (the device geometry)
 
