@@ -180,7 +180,8 @@ def brain_roi(labels):
     return binary_erosion(roi, iterations=1)
 
 
-def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3, exclude_face=False):
+def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3, exclude_face=False,
+                standoff=None):
     """Helmet receivers (all elements) + a source subset, snapped to water just
     outside the skull. ``kind='cap'`` = current Kernel-Flow cap; ``kind='clinical'``
     = the frequency-aware, scalp-conformal clinical helmet (see
@@ -193,9 +194,10 @@ def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3, exclude_face=
     # skull outer extent -> helmet radius just beyond it (in the water margin)
     rad = (max(np.ptp(xs), np.ptp(ys), np.ptp(zs)) / 2.0 + 4) * dx
     if kind == "clinical":
+        so = (4 * dx) if standoff is None else standoff   # flush -> pass standoff~dx
         pos = np.asarray(clinical_helmet_3d(
             center=tuple(ctr_m), radius_ap=rad, radius_lr=rad, radius_si=rad,
-            freq=freq, standoff=4 * dx, n_elements=n_elem,
+            freq=freq, standoff=so, n_elements=n_elem,
             scalp_mask=head, dx=dx))   # conformal to the real head surface
     else:
         pos = np.asarray(helmet_array_3d(
