@@ -37,7 +37,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from brain_fwi.phantoms import birnbaum as B
-from brain_fwi.transducers.helmet import helmet_array_3d, transducer_positions_to_grid
+from brain_fwi.transducers.helmet import (
+    helmet_array_3d, clinical_helmet_3d, transducer_positions_to_grid)
 from brain_fwi.simulation.forward import (
     build_domain, build_medium, build_time_axis, generate_observed_data,
     _build_source_signal,
@@ -179,20 +180,29 @@ def brain_roi(labels):
     return binary_erosion(roi, iterations=1)
 
 
-def make_helmet(labels, dx, n_elem, n_src):
+def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3):
     """Helmet receivers (all elements) + a source subset, snapped to water just
-    outside the skull. Returns (src_positions list, sensor_positions tuple)."""
+    outside the skull. ``kind='cap'`` = current Kernel-Flow cap; ``kind='clinical'``
+    = the frequency-aware, scalp-conformal clinical helmet (see
+    docs/design/helmet_array_plan.md). Returns (src_positions, sensor_positions)."""
     N = labels.shape[0]
     skull = labels == B.SKULL
+    head = skull | np.isin(labels, B.BRAIN) | (labels == B.LESION)
     xs, ys, zs = np.where(skull)
     ctr_m = (np.array([xs.mean(), ys.mean(), zs.mean()]) * dx)
     # skull outer extent -> helmet radius just beyond it (in the water margin)
     rad = (max(np.ptp(xs), np.ptp(ys), np.ptp(zs)) / 2.0 + 4) * dx
-    pos = np.asarray(helmet_array_3d(
-        n_elements=n_elem, center=tuple(ctr_m),
-        radius_ap=rad, radius_lr=rad, radius_si=rad, standoff=0.0,
-        coverage_angle=3.1416, exclude_face=False,
-    ))
+    if kind == "clinical":
+        pos = np.asarray(clinical_helmet_3d(
+            center=tuple(ctr_m), radius_ap=rad, radius_lr=rad, radius_si=rad,
+            freq=freq, standoff=4 * dx, n_elements=n_elem,
+            scalp_mask=head, dx=dx))   # conformal to the real head surface
+    else:
+        pos = np.asarray(helmet_array_3d(
+            n_elements=n_elem, center=tuple(ctr_m),
+            radius_ap=rad, radius_lr=rad, radius_si=rad, standoff=0.0,
+            coverage_angle=3.1416, exclude_face=False,
+        ))
     grid = transducer_positions_to_grid(jnp.asarray(pos), dx, (N, N, N))
     gx, gy, gz = (np.array(g, dtype=int) for g in grid)  # writable copies
 
@@ -221,6 +231,10 @@ def main():
     ap.add_argument("--phantom", choices=["birnbaum", "synthetic", "mida"], default="birnbaum",
                     help="synthetic = self-contained (cloud-safe); mida = ITRUSST head; "
                          "birnbaum = real patient (+lesion). mida/birnbaum are local data only.")
+    ap.add_argument("--helmet", choices=["cap", "clinical"], default="cap",
+                    help="cap = current Kernel-Flow cap; clinical = frequency-aware, "
+                         "scalp-conformal clinical helmet (helmet_array_plan.md)")
+    ap.add_argument("--n-elem", type=int, default=None, help="override receiver/element count")
     ap.add_argument("--n", type=int, default=None, help="grid size override")
     ap.add_argument("--subject", type=int, default=0)
     ap.add_argument("--sources", type=int, default=None)
@@ -270,7 +284,11 @@ def main():
           f"brain ROI={roi.sum()}, lesion voxels~{n_les}")
 
     print(f"[2/4] Helmet: {n_elem} receivers, {n_src} sources ...")
-    src_positions, sensor_positions = make_helmet(labels, dx, n_elem, n_src)
+    if args.n_elem:
+        n_elem = args.n_elem
+    print(f"  helmet: {args.helmet}, {n_elem} elements")
+    src_positions, sensor_positions = make_helmet(
+        labels, dx, n_elem, n_src, kind=args.helmet, freq=f0)
     solid = (labels == B.SKULL) | np.isin(labels, B.BRAIN) | (labels == B.LESION)
     in_solid = sum(solid[p] for p in zip(*sensor_positions))
     print(f"  receivers in solid tissue: {in_solid} (want 0)")
