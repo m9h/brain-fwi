@@ -28,12 +28,21 @@ ap.add_argument("--phantom", choices=["mida", "birnbaum", "synthetic"], default=
 ap.add_argument("--n", type=int, default=96)
 ap.add_argument("--n-elem", type=int, default=600)
 ap.add_argument("--geometry-only", action="store_true")
+ap.add_argument("--pub", action="store_true",
+                help="192^3 publication preset: 3 bands, 14 iters, 1024 flush elements")
+ap.add_argument("--mida-path", default=None, help="override MIDA .nii path (for cloud)")
 args = ap.parse_args()
-N = args.n
+N, n_elem = args.n, args.n_elem
+bands = [(50e3, 100e3), (100e3, 160e3)]; n_iters, shots = 12, 10
+if args.pub:                                  # publication-quality 192^3 preset
+    if args.n == 96: N = 192
+    if args.n_elem == 600: n_elem = 1024
+    bands = [(50e3, 100e3), (100e3, 180e3), (180e3, 280e3)]; n_iters, shots = 14, 12
 RES = "results/absorption_aware_fwi_3d"
 
 if args.phantom == "mida":
-    c_true, rho_true, alpha_true, labels, dx = ex06.load_mida_head(N)
+    c_true, rho_true, alpha_true, labels, dx = (
+        ex06.load_mida_head(N, args.mida_path) if args.mida_path else ex06.load_mida_head(N))
 elif args.phantom == "birnbaum":
     c_true, rho_true, alpha_true, labels, dx = ex06.load_head(N, 0)
 else:
@@ -43,7 +52,7 @@ print(f"{args.phantom} head {N}^3, dx={dx*1e3:.2f}mm, brain ROI={roi.sum()}", fl
 
 # Clinical helmet, FLUSH to the scalp (1-voxel coupling standoff), full coverage.
 src_positions, sensor_positions = ex06.make_helmet(
-    labels, dx, args.n_elem, n_src=24, kind="clinical", freq=600e3, standoff=1.0 * dx)
+    labels, dx, n_elem, n_src=24, kind="clinical", freq=600e3, standoff=1.0 * dx)
 rx, ry, rz = (np.asarray(a) for a in sensor_positions)
 solid = (labels == 5) | np.isin(labels, ex06.B.BRAIN) | (labels == 1)
 in_solid = int(sum(solid[x, y, z] for x, y, z in zip(rx, ry, rz)))
@@ -89,7 +98,7 @@ if args.geometry_only:
 ref = build_medium(build_domain((N, N, N), dx), ex06.C_MAX, 1000.0, pml_size=8)
 t_end = 1.9 * (N * dx) / 1500.0
 ta = build_time_axis(ref, cfl=0.3, t_end=t_end); dt = float(ta.dt); nt = int(ta.Nt)
-bands = [(50e3, 100e3), (100e3, 160e3)]; f0 = max(f for _, f in bands)
+f0 = max(f for _, f in bands)
 sig = _build_source_signal(f0, dt, nt)
 alpha_j = jnp.asarray(alpha_true)
 print(f"generating observed (with absorption), Nt={nt}...", flush=True)
@@ -98,7 +107,7 @@ observed = generate_observed_data(
     pml_size=8, time_axis=ta, source_signal=sig, dt=dt, attenuation=alpha_j,
     alpha_power=ex06.Y_POWER, verbose=False)
 c_init = c_true.copy(); c_init[roi] = ex06.C_BRAIN0
-cfg = FWIConfig(freq_bands=bands, n_iters_per_band=12, shots_per_iter=10, learning_rate=30.0,
+cfg = FWIConfig(freq_bands=bands, n_iters_per_band=n_iters, shots_per_iter=shots, learning_rate=30.0,
                 c_min=ex06.C_MIN, c_max=ex06.C_MAX, pml_size=8, cfl=0.3, gradient_smooth_sigma=1.5,
                 mask=jnp.asarray(roi.astype(np.float32)), attenuation=alpha_j,
                 alpha_power=ex06.Y_POWER, verbose=True)
