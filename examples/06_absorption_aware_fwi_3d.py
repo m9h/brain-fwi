@@ -180,7 +180,7 @@ def brain_roi(labels):
     return binary_erosion(roi, iterations=1)
 
 
-def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3):
+def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3, exclude_face=False):
     """Helmet receivers (all elements) + a source subset, snapped to water just
     outside the skull. ``kind='cap'`` = current Kernel-Flow cap; ``kind='clinical'``
     = the frequency-aware, scalp-conformal clinical helmet (see
@@ -201,7 +201,7 @@ def make_helmet(labels, dx, n_elem, n_src, kind="cap", freq=160e3):
         pos = np.asarray(helmet_array_3d(
             n_elements=n_elem, center=tuple(ctr_m),
             radius_ap=rad, radius_lr=rad, radius_si=rad, standoff=0.0,
-            coverage_angle=3.1416, exclude_face=False,
+            coverage_angle=2.8 if exclude_face else 3.1416, exclude_face=exclude_face,
         ))
     grid = transducer_positions_to_grid(jnp.asarray(pos), dx, (N, N, N))
     gx, gy, gz = (np.array(g, dtype=int) for g in grid)  # writable copies

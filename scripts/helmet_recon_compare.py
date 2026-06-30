@@ -35,9 +35,10 @@ rho_j = jnp.asarray(rho_true); mask_j = jnp.asarray(roi.astype(np.float32))
 alpha_j = jnp.asarray(alpha_true)
 
 
-def run_with_helmet(kind, n_elem):
-    print(f"\n=== helmet={kind}, n_elem={n_elem} ===", flush=True)
-    src, recv = ex06.make_helmet(labels, dx, n_elem, n_src=16, kind=kind, freq=600e3)
+def run_with_helmet(kind, n_elem, exclude_face=False):
+    print(f"\n=== helmet={kind}, n_elem={n_elem}, exclude_face={exclude_face} ===", flush=True)
+    src, recv = ex06.make_helmet(labels, dx, n_elem, n_src=16, kind=kind, freq=600e3,
+                                 exclude_face=exclude_face)
     solid = (labels == 5) | np.isin(labels, ex06.B.BRAIN) | (labels == 1)
     in_solid = sum(solid[p] for p in zip(*recv))
     print(f"  {len(recv[0])} receivers ({in_solid} in solid), {len(src)} sources", flush=True)
@@ -58,8 +59,10 @@ def run_with_helmet(kind, n_elem):
     return recon, rmse, len(recv[0])
 
 
-cap, cap_rmse, cap_n = run_with_helmet("cap", 160)
-clin, clin_rmse, clin_n = run_with_helmet("clinical", 512)
+# Fair comparison: BOTH face-realistic (can't image through eyes/airway).
+# Current cap = sparse generic-ellipsoid array; clinical = dense scalp-conformal.
+cap, cap_rmse, cap_n = run_with_helmet("cap", 256, exclude_face=True)
+clin, clin_rmse, clin_n = run_with_helmet("clinical", 768)
 
 # figure
 les = (labels == 1)
