@@ -22,7 +22,7 @@ from brain_fwi.simulation.forward import (
 from brain_fwi.inversion.fwi import FWIConfig, run_fwi
 from brain_fwi.robustness import brain_roi_rmse
 
-N = 96
+N = 64
 c_true, rho_true, alpha_true, labels, dx = ex06.synthetic_head(N)
 roi = ex06.brain_roi(labels)
 ref = build_medium(build_domain((N, N, N), dx), ex06.C_MAX, 1000.0, pml_size=8)
@@ -92,8 +92,8 @@ axb.set_ylabel("brain-ROI RMSE (m/s) ↓"); axb.set_title("Reconstruction error"
 axb.spines[["top", "right"]].set_visible(False); axb.tick_params(labelsize=9)
 fig.suptitle(f"Future imaging helmet, reconstructed: conformal {clin_n}-element clinical helmet "
              f"vs current {cap_n}-element cap  (+{gain:.0f}%)", fontsize=14, y=1.04)
-fig.text(0.5, -0.04, "absorption-aware FWI, synthetic head 96³  ·  JAX autodiff through j-Wave",
-         ha="center", fontsize=10.5, color="#444")
+fig.text(0.5, -0.04, f"absorption-aware FWI, synthetic head {N}³ (matched coverage)  ·  "
+         "JAX autodiff through j-Wave", ha="center", fontsize=10.5, color="#444")
 out = "results/absorption_aware_fwi_3d/helmet_recon_compare.png"
 fig.savefig(out, dpi=150, bbox_inches="tight", facecolor="white")
 print(f"\ncap {cap_rmse:.2f} -> clinical {clin_rmse:.2f} m/s ({gain:+.0f}%); saved {out}", flush=True)

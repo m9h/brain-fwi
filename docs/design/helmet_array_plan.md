@@ -106,6 +106,27 @@ the scalp:
    anteriorly. This becomes a robustness "perturber" too: vary element count /
    aperture → recon-quality curve (ties into the MAITE harness).
 
+## Finding: coverage dominates density (measured, 2026-06)
+
+Reconstructing the same head with different arrays (absorption-aware FWI,
+`scripts/helmet_recon_compare.py`) gave a consistent, non-obvious result:
+
+- An *idealized full-sphere* 160-element cap (4.98 RMSE) beat the realistic
+  face-apertured clinical helmet (7.06) — i.e. **the realistic face aperture
+  (can't image through eyes/airway) costs ~42%**, and density doesn't recover it.
+- Even face-realistic-to-face-realistic, a 256-element cap reaching 160° polar
+  beat a **768-element** clinical helmet reaching only 140° (4.70 vs 5.48).
+
+⇒ **For transcranial FWI, coverage *extent* (inferior/polar reach + minimizing
+the face gap) dominates element *density*.** A sparser array that reaches
+further beats a 3× denser one that covers less. Consequence for the spec:
+the future helmet's win is **maximal full-head encirclement** (Guasch's
+full-azimuth 3D), with density a secondary lever. `clinical_helmet_3d`'s default
+`polar_max` was raised 140°→158° to reflect this. (This is also a nice
+demonstration that the differentiable-FWI platform can *optimize the device
+geometry*, and a worked example of why the MAITE harness separates "coverage"
+and "density" as distinct perturbers — conflating them hid the real effect.)
+
 ## Why it matters
 
 The anterior transmission gap in the current cap is exactly where through-

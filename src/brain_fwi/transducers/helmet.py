@@ -144,7 +144,7 @@ def clinical_helmet_3d(
     radius_si: float = 0.100,
     freq: float = 300e3,
     standoff: float = 0.007,
-    polar_max_deg: float = 140.0,
+    polar_max_deg: float = 158.0,
     n_elements: Optional[int] = None,
     c_water: float = 1500.0,
     scalp_mask: Optional[np.ndarray] = None,
