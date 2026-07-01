@@ -7,7 +7,7 @@ geometry on the real head and (2) the full 3-plane reconstruction.
   python scripts/funding_helmet_demo.py                      # geometry + FWI recon
 """
 from __future__ import annotations
-import argparse, importlib.util, time
+import argparse, importlib.util, os, time
 import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
@@ -39,6 +39,7 @@ if args.pub:                                  # publication-quality 192^3 preset
     if args.n_elem == 600: n_elem = 1024
     bands = [(50e3, 100e3), (100e3, 180e3), (180e3, 280e3)]; n_iters, shots = 14, 12
 RES = "results/absorption_aware_fwi_3d"
+os.makedirs(RES, exist_ok=True)
 
 if args.phantom == "mida":
     c_true, rho_true, alpha_true, labels, dx = (
