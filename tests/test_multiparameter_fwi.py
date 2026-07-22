@@ -126,3 +126,49 @@ def test_velocity_only_path_returns_no_attenuation():
     from brain_fwi.inversion.fwi import FWIConfig
     cfg = FWIConfig()
     assert cfg.invert_attenuation is False
+
+
+def test_hierarchical_release_schedule():
+    """c-first schedule: α is frozen (not released) until the global iteration
+    reaches attenuation_release_frac of the total, then released. Default
+    frac=0.0 ⇒ released from iter 0 (co-inversion, unchanged)."""
+    from brain_fwi.inversion.fwi import FWIConfig, _alpha_released
+    # 2 bands x 10 iters = 20 total; release at 50% ⇒ global_iter >= 10.
+    cfg = FWIConfig(freq_bands=[(1, 2), (2, 3)], n_iters_per_band=10,
+                    attenuation_release_frac=0.5)
+    assert _alpha_released(0, 0, cfg) is False      # global 0
+    assert _alpha_released(0, 9, cfg) is False       # global 9
+    assert _alpha_released(1, 0, cfg) is True         # global 10
+    assert _alpha_released(1, 9, cfg) is True          # global 19
+    # default: released from the very first iter (backward compatible)
+    d = FWIConfig(freq_bands=[(1, 2)], n_iters_per_band=5)
+    assert _alpha_released(0, 0, d) is True
+
+
+@pytest.mark.slow
+def test_alpha_frozen_when_never_released():
+    """release_frac=1.0 freezes α for the entire run ⇒ recovered α equals its
+    init (only velocity moves). Guards the c-first freeze end-to-end."""
+    from brain_fwi.simulation.forward import (
+        build_domain, build_medium, build_time_axis, simulate_shot_sensors,
+        _build_source_signal)
+    from brain_fwi.inversion.fwi import FWIConfig, run_fwi
+
+    grid, dx, y, c, rho, alpha_true, blob = _alpha_blob_phantom(24)
+    n = grid[0]; pml = 8; c_max = 1600.0; t_end = 1.9 * (n * dx) / 1500.0
+    dom = build_domain(grid, dx); ref = build_medium(dom, c_max, 1000.0, pml_size=pml)
+    ta = build_time_axis(ref, cfl=0.3, t_end=t_end); dt = float(ta.dt); nt = int(ta.Nt)
+    sig = _build_source_signal(300e3, dt, nt)
+    xs, ys, zs = _ring(n); recv = (xs, ys, zs)
+    srcs = [(int(xs[i]), int(ys[i]), int(zs[i])) for i in range(0, 16, 4)]
+    obs = jnp.stack([simulate_shot_sensors(
+        build_medium(dom, c, rho, pml_size=pml, attenuation=alpha_true, alpha_power=y),
+        ta, sp, recv, sig, dt) for sp in srcs])
+    a_init = jnp.zeros(grid, jnp.float32)
+    cfg = FWIConfig(freq_bands=[(150e3, 300e3)], n_iters_per_band=6, shots_per_iter=len(srcs),
+                    learning_rate=15.0, c_min=1400.0, c_max=c_max, pml_size=pml, cfl=0.3,
+                    gradient_smooth_sigma=1.0, alpha_power=y, invert_attenuation=True,
+                    attenuation_init=a_init, attenuation_lr=2.0, attenuation_max=12.0,
+                    attenuation_release_frac=1.0, verbose=False)
+    res = run_fwi(obs, c, rho, dx, srcs, recv, sig, dt, t_end, config=cfg, key=jr.PRNGKey(0))
+    assert float(jnp.max(jnp.abs(res.attenuation - a_init))) < 1e-6, "α must stay frozen"

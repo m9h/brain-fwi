@@ -138,6 +138,14 @@ class FWIConfig:
     attenuation_speed_anchors: Optional[tuple] = None
     attenuation_speed_weight: float = 0.0    # pull toward c-predicted α in [0,1]
 
+    # Hierarchical c-first schedule (issue #45 recipe). α is FROZEN at its init
+    # until the global iteration reaches this fraction of the total, then
+    # released. This avoids the c-α crosstalk where a free-from-iter-0 α absorbs
+    # the amplitude misfit and starves velocity recovery — recover c first, then
+    # release α (with the constitutive coupling) into a well-resolved c. 0.0 =
+    # co-invert from the start (unchanged default); ~0.5 = c-only first half.
+    attenuation_release_frac: float = 0.0
+
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
     # Illumination "water level" for preconditioning, as a fraction of peak
@@ -454,6 +462,18 @@ def _velocity_of(params):
     return params["c"] if isinstance(params, dict) else params
 
 
+def _alpha_released(band_idx: int, it: int, config: "FWIConfig") -> bool:
+    """Hierarchical c-first schedule: has attenuation inversion engaged yet?
+
+    α is frozen until the global iteration (across bands) reaches
+    ``attenuation_release_frac`` of the total. Default frac 0.0 → released from
+    the first iteration (co-inversion, unchanged behaviour).
+    """
+    total = max(1, config.n_iters_per_band * len(config.freq_bands))
+    global_iter = band_idx * config.n_iters_per_band + it
+    return bool(global_iter >= config.attenuation_release_frac * total)
+
+
 def run_fwi(
     observed_data: jnp.ndarray,
     initial_velocity: jnp.ndarray,
@@ -656,13 +676,18 @@ def run_fwi(
             # path this is a single field; for Phase 6 each leaf (c, α) is
             # finalised independently with its own mask, and α is scaled to its
             # own step size (attenuation_lr) since the shared SGD carries lr=c-step.
+            alpha_released = config.invert_attenuation and _alpha_released(
+                band_idx, it, config)
             if config.invert_attenuation:
                 gc = _finalize_gradient(
                     grad["c"], grad_sq_accum["c"], n_shots, config.mask, config)
-                ga = _finalize_gradient(
-                    grad["a"], grad_sq_accum["a"], n_shots,
-                    config.attenuation_mask, config)
-                ga = ga * (config.attenuation_lr / config.learning_rate)
+                if alpha_released:
+                    ga = _finalize_gradient(
+                        grad["a"], grad_sq_accum["a"], n_shots,
+                        config.attenuation_mask, config)
+                    ga = ga * (config.attenuation_lr / config.learning_rate)
+                else:
+                    ga = jnp.zeros_like(grad["a"])   # c-first: α frozen
                 grad = {"c": gc, "a": ga}
             else:
                 grad = _finalize_gradient(
@@ -674,7 +699,10 @@ def run_fwi(
             if config.invert_attenuation:
                 c_new = jnp.clip(params["c"], config.c_min, config.c_max)
                 a_new = jnp.clip(params["a"], 0.0, config.attenuation_max)
-                past_ramp = it >= config.attenuation_prior_ramp * config.n_iters_per_band
+                # Regularisers engage only once α is released and past the
+                # per-band ramp (while frozen, α is held exactly at its init).
+                past_ramp = alpha_released and (
+                    it >= config.attenuation_prior_ramp * config.n_iters_per_band)
                 # Tissue-α manifold prior (issue #45): ramp in late so the data
                 # has grown α past the archetype midpoint before we project.
                 if (config.attenuation_archetypes is not None

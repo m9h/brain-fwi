@@ -125,6 +125,27 @@ RMSE**). So the recipe is clear: **recover c first, then release α with the
 constitutive coupling.** This closes #45's second half for c-contrasted tissues —
 GM/WM still excepted (degenerate c).
 
+### 3.4 Hierarchical c-first schedule (implemented)
+`FWIConfig.attenuation_release_frac` freezes α at its init until the global
+iteration reaches that fraction of the total, then releases it (with the
+coupling) into a well-resolved c — turning the recipe above into a config knob.
+Default 0.0 = co-invert from the start (unchanged). `_alpha_released` gates the
+α gradient (zeroed while frozen) and the regularisers; unit-tested
+(`test_hierarchical_release_schedule`, `test_alpha_frozen_when_never_released`).
+
+**Cold-start caveat (measured, honest).** On the strong-contrast synthetic blob
+(c 1500→2000, α 0→6), the schedule did **not** yet win from a cold uniform-c
+start — because **velocity itself did not recover this blob**: lossless
+velocity-only FWI reached only c_in 1515 (peak 1524) and even with
+preconditioning only 1552 (peak 1584), vs true 2000, in 40 iters. The blob is
+~1 wavelength across (2.9 mm radius at 150–300 kHz) and +33 % contrast — an
+illumination-limited target for this ring geometry, **orthogonal to the α
+schedule**. The schedule + coupling are validated in the c-recovered regime
+(§3.3); an end-to-end cold-start demonstration needs a velocity-recoverable
+phantom (larger / lower-contrast target, preconditioning, more iters, or the
+`make_gm_wm_contrast_head` anatomical phantom) — a tuning follow-on, not a
+mechanism gap.
+
 **Honest regime finding (measured).** The proximal prior snaps toward the
 *nearest* archetype, so it only pulls α *up* once the data has recovered it past
 the archetype **midpoint (~50 % of the true value)**. In the weak single-band
