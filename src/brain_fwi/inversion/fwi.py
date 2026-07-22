@@ -36,7 +36,7 @@ from ..simulation.forward import (
     simulate_shot_sensors,
     _build_source_signal,
 )
-from ..constitutive import manifold_proximal
+from ..constitutive import alpha_from_speed, manifold_proximal
 from .losses import l2_loss, envelope_loss, multiscale_loss
 from .param_field import (
     ParameterField,
@@ -129,6 +129,14 @@ class FWIConfig:
     attenuation_archetypes: Optional[jnp.ndarray] = None
     attenuation_prior_weight: float = 0.0    # proximal pull strength beta in [0,1]
     attenuation_prior_ramp: float = 0.5      # fraction of a band's iters before prior engages
+
+    # Constitutive velocity→attenuation coupling (issue #45). The well-resolved
+    # sound speed predicts α through the same-tissue (c, α) relation (KK/causal
+    # premise), letting the strong channel inform the weak one. Provide the
+    # (c_anchors, alpha_anchors) from ``constitutive.speed_alpha_anchors``.
+    # Degenerate for GM/WM (equal c) — helps c-contrasted tissues only.
+    attenuation_speed_anchors: Optional[tuple] = None
+    attenuation_speed_weight: float = 0.0    # pull toward c-predicted α in [0,1]
 
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
@@ -664,19 +672,26 @@ def run_fwi(
             updates, opt_state = optimizer.update(grad, opt_state, params)
             params = optax.apply_updates(params, updates)
             if config.invert_attenuation:
+                c_new = jnp.clip(params["c"], config.c_min, config.c_max)
                 a_new = jnp.clip(params["a"], 0.0, config.attenuation_max)
+                past_ramp = it >= config.attenuation_prior_ramp * config.n_iters_per_band
                 # Tissue-α manifold prior (issue #45): ramp in late so the data
                 # has grown α past the archetype midpoint before we project.
                 if (config.attenuation_archetypes is not None
-                        and config.attenuation_prior_weight > 0.0
-                        and it >= config.attenuation_prior_ramp * config.n_iters_per_band):
+                        and config.attenuation_prior_weight > 0.0 and past_ramp):
                     a_new = manifold_proximal(
                         a_new, config.attenuation_archetypes,
                         beta=config.attenuation_prior_weight)
-                params = {
-                    "c": jnp.clip(params["c"], config.c_min, config.c_max),
-                    "a": a_new,
-                }
+                # Constitutive c→α coupling (issue #45): the well-resolved
+                # velocity predicts α (same-tissue relation), pulling weak α
+                # toward the strong channel's implication. Ramped like the prior.
+                if (config.attenuation_speed_anchors is not None
+                        and config.attenuation_speed_weight > 0.0 and past_ramp):
+                    c_anch, a_anch = config.attenuation_speed_anchors
+                    pred = alpha_from_speed(c_new, c_anch, a_anch)
+                    a_new = a_new + config.attenuation_speed_weight * (pred - a_new)
+                    a_new = jnp.clip(a_new, 0.0, config.attenuation_max)
+                params = {"c": c_new, "a": a_new}
             else:
                 params = jnp.clip(params, config.c_min, config.c_max)
 

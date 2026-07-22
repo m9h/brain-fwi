@@ -92,6 +92,39 @@ analogue. Wired into `run_fwi` via `attenuation_archetypes` /
 `attenuation_prior_weight` / `attenuation_prior_ramp`, applied as a **late-ramped
 proximal step** after each α update.
 
+**Constitutive c→α coupling (implemented, `constitutive/coupling.py`).** The
+second lever: the well-resolved velocity predicts α through the same-tissue
+(c, α) relation (`speed_alpha_anchors` + `alpha_from_speed`, wired via
+`attenuation_speed_anchors`/`attenuation_speed_weight`, ramped). It is
+**degenerate for GM/WM** (equal c → equal predicted α), so it aids c-contrasted
+tissues (skull, CSF, brain-vs-background) but not the GM/WM split.
+
+**Crosstalk finding (measured, blocks the naive coupling demo).** On a phantom
+where the anomaly has *both* a c and an α contrast, a free-from-iter-0 α
+**greedily absorbs the amplitude misfit and starves the velocity update**:
+single-band 32³, α reached in-blob 3.05 while c stayed 1506 m/s (true 2000) — c
+was not recovered at all. Since the coupling predicts α *from* c, it needs c to
+be good first. ⇒ multiparameter FWI needs **c-first / hierarchical scheduling**
+(freeze or down-weight α until c is recovered, then release α with the coupling).
+The coupling machinery is in place and unit-tested; demonstrating its in-loop win
+requires that hierarchical schedule (next step) — an honest dependency, not a
+bug.
+
+**Decisive win once c is recovered (measured).** Giving the inversion the
+well-recovered-c regime a c-first schedule provides (c started at truth), the
+coupling is decisive on the skull-like blob (c 2000 / α 6 in water):
+
+| | α RMSE | α in-blob (true 6.0) |
+|---|---|---|
+| free-voxel | 0.916 | 0.26 |
+| + constitutive coupling | **0.030** | **5.99** |
+
+With c correct, the weak α data-gradient barely moves α (0.26), but the coupling
+reads the correct c → predicts α = 6 → fills it almost perfectly (**30× lower
+RMSE**). So the recipe is clear: **recover c first, then release α with the
+constitutive coupling.** This closes #45's second half for c-contrasted tissues —
+GM/WM still excepted (degenerate c).
+
 **Honest regime finding (measured).** The proximal prior snaps toward the
 *nearest* archetype, so it only pulls α *up* once the data has recovered it past
 the archetype **midpoint (~50 % of the true value)**. In the weak single-band
