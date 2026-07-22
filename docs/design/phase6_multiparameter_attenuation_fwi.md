@@ -146,6 +146,26 @@ phantom (larger / lower-contrast target, preconditioning, more iters, or the
 `make_gm_wm_contrast_head` anatomical phantom) — a tuning follow-on, not a
 mechanism gap.
 
+### 3.5 End-to-end capstone on anatomy (`scripts/multiparam_head_demo.py`)
+The full recipe on the `make_gm_wm_contrast_head` phantom (64³, 2 mm), clinical
+setup (skull/scalp/CSF known from CT, invert brain c+α), preconditioning +
+c-first + coupling, with a co-varying stroke lesion (c 1700 / α 3.0) in white
+matter:
+
+- **Brain bulk α** recovered toward the tissue value from the known c (coupling
+  reads c 1560 → ~0.6).
+- **Lesion partially recovered** — c 1560→1577 (true 1700), α 0→1.06 (true 3.0),
+  i.e. **illumination/iteration-limited** at 8 iters/band, the same convergence
+  wall as §3.4, *not* an α-machinery gap.
+- **GM/WM NOT separated** — recon GM α 0.87 vs WM α 0.72 (truth 0.6/0.9),
+  essentially noise and even mis-ordered. The coupling pulls all brain voxels to
+  the single c=1560 anchor, so it **cannot** split GM from WM. The frontier,
+  confirmed on anatomy.
+
+Numerical note: the 2800 m/s skull under-samples at coarse dx — the demo needs
+cfl ≤ 0.2 at 2 mm (a 4 mm grid is NaN-unstable even lossless). Figure/arrays:
+`results/absorption_aware_fwi_3d/multiparam_head_demo.{png,npz}`.
+
 **Honest regime finding (measured).** The proximal prior snaps toward the
 *nearest* archetype, so it only pulls α *up* once the data has recovered it past
 the archetype **midpoint (~50 % of the true value)**. In the weak single-band
