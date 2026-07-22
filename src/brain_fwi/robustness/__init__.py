@@ -10,7 +10,7 @@ from .perturbers import (
     SkullPosePerturber,
 )
 from .harness import robustness_sweep, plot_robustness_curve
-from .metrics import brain_roi_rmse, lesion_rmse
+from .metrics import brain_roi_rmse, lesion_rmse, gm_wm_separability
 
 __all__ = [
     "AbsorptionErrorPerturber",
@@ -20,4 +20,5 @@ __all__ = [
     "plot_robustness_curve",
     "brain_roi_rmse",
     "lesion_rmse",
+    "gm_wm_separability",
 ]

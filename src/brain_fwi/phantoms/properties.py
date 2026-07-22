@@ -59,6 +59,57 @@ TISSUE_PROPERTIES: Dict[int, Tuple[float, float, float]] = {
 SCI_TO_BRAINWEB = {0: 0, 1: 6, 2: 7, 3: 1, 4: 2, 5: 3}
 
 
+# ---------------------------------------------------------------------------
+# GM/WM contrast (issue #47)
+# ---------------------------------------------------------------------------
+# The ITRUSST table above assigns grey and white matter identical properties
+# (both 1560 m/s, 0.6 dB/cm/MHz) — faithful to the benchmark but zero contrast,
+# so a reconstruction cannot be scored for GM/WM. Real tissue separates mainly
+# in ATTENUATION: Kang et al. (Ultrasonics 2022) measure white-matter
+# attenuation ~1.5x grey-matter, while the sound-speed difference sits at the
+# measurement noise floor (SD 10-14 m/s). This is *why* Phase 6 inverts
+# attenuation. Contrast is OPT-IN so the default table stays ITRUSST-faithful.
+GM_WM_ALPHA_RATIO = 1.5  # Kang et al. 2022
+
+
+def tissue_properties_contrasted(
+    alpha_ratio: float = GM_WM_ALPHA_RATIO,
+    wm_c_delta: float = 0.0,
+    wm_rho_delta: float = 0.0,
+) -> Dict[int, Tuple[float, float, float]]:
+    """A copy of :data:`TISSUE_PROPERTIES` with a measured GM/WM contrast.
+
+    Attenuation is the physically-robust discriminator (Kang 2022), so white
+    matter (label 3) gets ``alpha_ratio`` x grey matter's attenuation. Sound
+    speed / density deltas are opt-in (default 0) because speed barely separates
+    the tissues. Grey matter and all other tissues are untouched; the global
+    table is NOT mutated.
+
+    Args:
+        alpha_ratio: WM/GM attenuation ratio (default 1.5, Kang 2022).
+        wm_c_delta: optional WM sound-speed offset (m/s) added to GM's speed.
+        wm_rho_delta: optional WM density offset (kg/m^3).
+
+    Returns:
+        A new ``{label: (c, rho, alpha)}`` dict.
+    """
+    props = dict(TISSUE_PROPERTIES)
+    gm_c, gm_rho, gm_alpha = props[2]
+    props[3] = (gm_c + wm_c_delta, gm_rho + wm_rho_delta, gm_alpha * alpha_ratio)
+    return props
+
+
+def _lookups_for(properties: Dict[int, Tuple[float, float, float]]):
+    """Build (c, rho, alpha) JAX lookup arrays for an arbitrary property table."""
+    max_label = max(properties.keys())
+    c = np.zeros(max_label + 1, np.float32)
+    rho = np.zeros(max_label + 1, np.float32)
+    alpha = np.zeros(max_label + 1, np.float32)
+    for lab, (cc, rr, aa) in properties.items():
+        c[lab], rho[lab], alpha[lab] = cc, rr, aa
+    return jnp.array(c), jnp.array(rho), jnp.array(alpha)
+
+
 # Pre-build numpy lookup arrays for fast indexing
 _MAX_LABEL = max(TISSUE_PROPERTIES.keys())
 _C_LOOKUP = np.zeros(_MAX_LABEL + 1, dtype=np.float32)
@@ -97,16 +148,28 @@ def map_labels_to_attenuation(labels: jnp.ndarray) -> jnp.ndarray:
 
 def map_labels_to_all(
     labels: jnp.ndarray,
+    properties: Dict[int, Tuple[float, float, float]] = None,
 ) -> Dict[str, jnp.ndarray]:
     """Map tissue labels to all acoustic properties.
 
+    Args:
+        labels: integer tissue-label array.
+        properties: optional custom ``{label: (c, rho, alpha)}`` table, e.g.
+            :func:`tissue_properties_contrasted` for GM/WM contrast (#47).
+            Defaults to the canonical ITRUSST :data:`TISSUE_PROPERTIES`.
+
     Returns dict with keys: 'sound_speed', 'density', 'attenuation'.
     """
-    safe = jnp.clip(labels, 0, _MAX_LABEL).astype(jnp.int32)
+    if properties is None:
+        c_jax, rho_jax, alpha_jax, max_label = _C_JAX, _RHO_JAX, _ALPHA_JAX, _MAX_LABEL
+    else:
+        c_jax, rho_jax, alpha_jax = _lookups_for(properties)
+        max_label = max(properties.keys())
+    safe = jnp.clip(labels, 0, max_label).astype(jnp.int32)
     return {
-        "sound_speed": _C_JAX[safe],
-        "density": _RHO_JAX[safe],
-        "attenuation": _ALPHA_JAX[safe],
+        "sound_speed": c_jax[safe],
+        "density": rho_jax[safe],
+        "attenuation": alpha_jax[safe],
     }
 
 
