@@ -85,6 +85,23 @@ realistic).
    basis: acoustic-attenuation anisotropy and diffusion anisotropy share the same
    white-matter fibre microstructure, so DTI FA/orientation is the ground truth.
    Next: a **multi-fibre** (two-direction) model for crossings; 3D.
+
+4. **Crossing-fibre model — DONE (angular-harmonic ODF).** The DiSCo hub failed
+   because a single-fibre `sin^2(theta-phi)` profile is pure **2-theta**: two
+   crossing fibres sum to one 2-theta sinusoid (2 measurements, 4 unknowns) —
+   fundamentally unresolvable, the exact acoustic analogue of **DTI cannot do
+   crossings**. Crossings resolve only when the single-fibre profile is SHARPER
+   (`sin^{2s}`, s>1), carrying higher (4-theta) harmonics — the acoustic analogue
+   of **HARDI / high-order ODFs**. `crossing_fibres.py`: `fibre_profile`,
+   `two_fibre_profile`, `angular_harmonics` (attenuation-ODF), `crossing_index`
+   (`|4theta|/|2theta|`, the crossing detector — small for one fibre, large for a
+   sharp orthogonal crossing, ~0 for a soft crossing which has no 4-theta), and
+   `fit_two_fibres` (grid-refine, recovers BOTH directions to <10 deg for a sharp
+   crossing). Honest limit: **soft (sin^2) crossings are never resolvable**
+   (orthogonal soft crossing even degenerates to isotropic); resolvability needs a
+   physically sharp attenuation profile. Next: fit the per-voxel attenuation ODF
+   in the tomography (replace the single-phi field with 2-theta+4-theta harmonic
+   fields) to fix the DiSCo hub end-to-end.
 4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
    absorber (route A of `cann_forward_scoping.md`, but *anisotropic* moduli) or,
    cheaper first, per-angle isotropic α inversions assembled into α(θ) and fed to
