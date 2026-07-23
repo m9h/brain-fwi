@@ -90,11 +90,32 @@ def forward_ray_decay(a_iso, a_aniso, phi, rays: Rays):
     return jax.vmap(one)(rays.coords, rays.angles, rays.ds)
 
 
+def forward_ray_decay_uv(b, u, v, rays: Rays):
+    """Per-ray decay in the anisotropy-VECTOR parameterisation.
+
+    ``alpha(theta) = b - u*cos(2 theta) - v*sin(2 theta)`` (LINEAR in b, u, v),
+    the orthogonal-basis form of ``alpha_iso + alpha_aniso*sin^2(theta-phi)`` with
+    ``b = alpha_iso + 0.5*alpha_aniso``, ``u = 0.5*alpha_aniso*cos 2phi``,
+    ``v = 0.5*alpha_aniso*sin 2phi``. Recovering (u, v) yields both the anisotropy
+    magnitude and the fibre direction without knowing phi.
+    """
+    c2 = jnp.cos(2.0 * rays.angles)
+    s2 = jnp.sin(2.0 * rays.angles)
+
+    def one(coords, c2r, s2r, ds):
+        bb = map_coordinates(b, coords, order=1, mode="constant", cval=0.0)
+        uu = map_coordinates(u, coords, order=1, mode="constant", cval=0.0)
+        vv = map_coordinates(v, coords, order=1, mode="constant", cval=0.0)
+        return jnp.sum(bb - uu * c2r - vv * s2r) * ds
+    return jax.vmap(one)(rays.coords, c2, s2, rays.ds)
+
+
 @dataclass
 class AnisoResult:
     a_iso: jnp.ndarray
     a_aniso: jnp.ndarray
     loss_history: list
+    phi: jnp.ndarray = None            # recovered fibre direction (rad), if any
 
 
 def invert_anisotropic(obs, rays: Rays, phi, grid_shape, mask=None, a_iso=None,
@@ -159,3 +180,52 @@ def invert_anisotropic(obs, rays: Rays, phi, grid_shape, mask=None, a_iso=None,
         hist.append(float(loss))
     ai, aa = fields(params)
     return AnisoResult(a_iso=ai, a_aniso=aa, loss_history=hist)
+
+
+def invert_orientation(obs, rays: Rays, grid_shape, mask=None,
+                       n_iters: int = 3000, lr: float = 3e-2,
+                       smooth: float = 3e-4) -> AnisoResult:
+    """Blindly recover the anisotropy magnitude AND fibre orientation from
+    multi-angle ray decays — no DTI. Inverts the anisotropy VECTOR ``(u, v)``
+    (linear, orthogonal to the bulk) plus a **homogeneous (scalar) bulk** (the
+    structural prior that makes the bulk/anisotropy split identifiable, as in
+    :func:`invert_anisotropic`). Returns ``a_aniso = 2*sqrt(u^2+v^2)`` and
+    ``phi = 0.5*atan2(v, u)`` per voxel; the fibre direction is meaningful only
+    where ``a_aniso`` is non-trivial (WM).
+    """
+    obs = jnp.asarray(obs)
+    m = jnp.ones(grid_shape) if mask is None else jnp.asarray(mask)
+    params = {"rb": jnp.asarray(-1.0),
+              "u": jnp.zeros(grid_shape), "v": jnp.zeros(grid_shape)}
+
+    def lap(f):
+        return (f - 0.25 * (jnp.roll(f, 1, 0) + jnp.roll(f, -1, 0)
+                            + jnp.roll(f, 1, 1) + jnp.roll(f, -1, 1))) * m
+
+    def loss_fn(p):
+        b = jax.nn.softplus(p["rb"]) * m         # homogeneous bulk
+        u, v = p["u"] * m, p["v"] * m
+        pred = forward_ray_decay_uv(b, u, v, rays)
+        return (jnp.mean((pred - obs) ** 2)
+                + smooth * (jnp.mean(lap(u) ** 2) + jnp.mean(lap(v) ** 2)))
+
+    opt = optax.adam(lr)
+    state = opt.init(params)
+
+    @jax.jit
+    def step(p, s):
+        loss, g = jax.value_and_grad(loss_fn)(p)
+        upd, s = opt.update(g, s)
+        return optax.apply_updates(p, upd), s, loss
+
+    hist = []
+    for _ in range(n_iters):
+        params, state, loss = step(params, state)
+        hist.append(float(loss))
+    b = jax.nn.softplus(params["rb"]) * m
+    u, v = params["u"] * m, params["v"] * m
+    mag = jnp.sqrt(u ** 2 + v ** 2)
+    a_aniso = 2.0 * mag
+    a_iso = (b - mag) * m
+    phi = 0.5 * jnp.arctan2(v, u)
+    return AnisoResult(a_iso=a_iso, a_aniso=a_aniso, loss_history=hist, phi=phi)

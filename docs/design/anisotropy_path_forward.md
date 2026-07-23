@@ -60,8 +60,18 @@ realistic).
 2. **DONE** — blind joint recovery via the homogeneous-bulk structural prior
    (ratio ~12, bulk recovered). Next refinement: **low-rank** bulk for realistic
    slowly-varying tissue.
-3. **Realistic fibre fields** — per-voxel `phi` from DTI (not uniform); recover
-   `phi` too, or take it from co-registered MRI (transcranial patients have it).
+3. **Fibre orientation from ultrasound (no DTI)** — **DONE (magnitude+direction).**
+   `alpha(theta) = b - u*cos2theta - v*sin2theta` with the anisotropy vector
+   `(u,v) = (0.5 a_aniso cos2phi, 0.5 a_aniso sin2phi)` is *linear*, so inverting
+   `(u,v)` gives `a_aniso = 2|(u,v)|` **and** `phi = 0.5 atan2(v,u)`.
+   `invert_orientation` recovers the **fibre direction inside WM to ~0.6-0.9 deg**
+   from the angular pattern alone — acoustic tractography, removing the DTI
+   dependency for orientation. (`test_orientation_recovery.py`.) The blind (u,v)
+   magnitude is leakier (ratio ~1.8) than the known-phi form (ratio ~12); the
+   **two-stage** recipe — recover phi via (u,v), then the clean sin^2-form
+   magnitude with that phi — sharpens it (ratio ~2.7 and rising). Remaining:
+   per-voxel *varying* phi (curved tracts) and recovering phi where a_aniso is
+   weak.
 4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
    absorber (route A of `cann_forward_scoping.md`, but *anisotropic* moduli) or,
    cheaper first, per-angle isotropic α inversions assembled into α(θ) and fed to
