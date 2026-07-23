@@ -44,6 +44,14 @@ gray vs white matter.
    transmission FWI could resolve it. This is the CANN-native path to a genuine
    GM/WM separation, and the most promising open direction.
 
+   **Demonstrated at the discovery level** (`alpha_basis_library_anisotropic`,
+   `test_cann_anisotropy.py`): each frequency block is multiplied by non-negative
+   angular factors (isotropic `1`, anisotropic `sin²θ`); given multi-angle α
+   samples, L0 discovery selects a `sin²θ` term for a fibre-oriented white-matter
+   α(ω,θ) but **not** for an isotropic gray-matter α — a genuine *shape*
+   difference, not a magnitude one. This is the constitutive-level proof that the
+   discriminator exists; realising it needs multi-angle FWI data (below).
+
 ## The three gaps (and status)
 
 | # | Gap | Status |

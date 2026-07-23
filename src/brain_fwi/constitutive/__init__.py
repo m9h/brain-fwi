@@ -3,6 +3,7 @@ from .coupling import alpha_from_speed, speed_alpha_anchors
 from .discovery import (
     DiscoveryResult,
     alpha_basis_library,
+    alpha_basis_library_anisotropic,
     discover_alpha_law,
 )
 from .kk import kk_consistency_loss, kramers_kronig_dispersion
@@ -18,6 +19,7 @@ __all__ = [
     "speed_alpha_anchors",
     "DiscoveryResult",
     "alpha_basis_library",
+    "alpha_basis_library_anisotropic",
     "discover_alpha_law",
     "kk_consistency_loss",
     "kramers_kronig_dispersion",

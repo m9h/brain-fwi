@@ -78,6 +78,45 @@ def alpha_basis_library(
     return Phi, names
 
 
+def alpha_basis_library_anisotropic(
+    omega: jnp.ndarray,
+    theta: jnp.ndarray,
+    exponents: Sequence[float] = (1.0, 1.1, 1.3, 1.5, 2.0),
+    taus: Optional[Sequence[float]] = None,
+    omega_scale: Optional[float] = None,
+) -> Tuple[jnp.ndarray, List[str]]:
+    """Direction-dependent attenuation library alpha(omega, theta).
+
+    White matter is fibre-oriented, so its attenuation depends on the angle
+    ``theta`` between propagation and fibre direction; gray matter is isotropic.
+    This is the CANN-native GM/WM *shape* discriminator — the structural-tensor
+    (I4/I5) analogue Kuhl did not activate in the isotropic brain study.
+
+    Each frequency building block (:func:`alpha_basis_library`) is multiplied by
+    each **non-negative** angular factor — isotropic ``1`` and anisotropic
+    ``sin^2(theta)`` (extra attenuation across fibres) — so non-negativity and
+    DC-vanishing are preserved and ``alpha >= 0`` for any non-negative weights.
+    The design matrix is over the flattened ``(omega, theta)`` grid in
+    ``indexing="ij"`` order (frequency-major).
+
+    Returns:
+        ``(Phi, names)`` with ``Phi`` shape ``(len(omega)*len(theta), n_terms)``
+        and names like ``"pow_1.3xsin2"``.
+    """
+    theta = jnp.asarray(theta)
+    Phi_f, fnames = alpha_basis_library(omega, exponents, taus, omega_scale)  # (nf, k)
+    angular = (("iso", jnp.ones_like(theta)), ("sin2", jnp.sin(theta) ** 2))
+
+    cols: List[jnp.ndarray] = []
+    names: List[str] = []
+    for j, fn in enumerate(fnames):
+        for gname, gvals in angular:
+            col = Phi_f[:, j][:, None] * gvals[None, :]      # (nf, na)
+            cols.append(col.reshape(-1))
+            names.append(f"{fn}x{gname}")
+    return jnp.stack(cols, axis=-1), names
+
+
 def _nnls(A: np.ndarray, b: np.ndarray, iters: int = 800) -> np.ndarray:
     """Non-negative least squares via projected gradient (small dense systems)."""
     A = np.asarray(A, float); b = np.asarray(b, float)
