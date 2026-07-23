@@ -111,8 +111,12 @@ realistic).
    cancels) and mis-reads the crossing as near-isotropic. `sin4_odf_coeffs` builds
    the ground-truth ODF; `test_odf_tomography.py`. The 4-theta channel is
    higher-order/weaker (light smoothing), so recovered contrast is modest (~2x,
-   not the true near-infinite ratio) — honest 4-theta SNR. Next: per-voxel
-   two-fibre fit on the recovered ODF for explicit crossing directions; 3D.
+   not the true near-infinite ratio) — honest 4-theta SNR. `resolve_odf_crossings` gives the per-voxel two-fibre decomposition (explicit
+   crossing directions — the tomography's "acoustic HARDI" output;
+   `test_odf_resolve.py`). **These ODF harmonic fields are exactly the anisotropic-
+   attenuation unknowns a full-wave FWI would invert — the ray tomography validates
+   the parameterisation before the expensive j-Wave build.** Next: 3D; the
+   anisotropic/Prony absorber to carry this into j-Wave FWI on real anatomy.
 4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
    absorber (route A of `cann_forward_scoping.md`, but *anisotropic* moduli) or,
    cheaper first, per-angle isotropic α inversions assembled into α(θ) and fed to

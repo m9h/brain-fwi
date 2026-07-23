@@ -74,6 +74,63 @@ def crossing_index_map(c2, s2, c4, s4):
 
 
 @dataclass
+class OdfCrossingMaps:
+    """Per-voxel two-fibre decomposition of an attenuation-ODF field."""
+    phi1: np.ndarray     # primary fibre direction (rad)
+    phi2: np.ndarray     # secondary fibre direction (rad); meaningful where a2>0
+    a1: np.ndarray       # primary amplitude
+    a2: np.ndarray       # secondary amplitude (~0 where single fibre)
+    iso: np.ndarray      # isotropic baseline
+
+
+def resolve_odf_crossings(a0, c2, s2, c4, s4, mask, sharpness: int = 2,
+                          n_grid: int = 30, n_angles: int = 180) -> OdfCrossingMaps:
+    """Per-voxel two-fibre decomposition of the attenuation ODF — the tomography's
+    explicit-crossing ("acoustic HARDI") output. Reconstructs each voxel's angular
+    profile from its harmonic fields and grid-searches two fibre directions
+    (amplitudes solved in closed form per grid pair, vectorised across voxels).
+
+    These are the same anisotropic unknowns a full-wave anisotropic-attenuation
+    FWI would invert; the straight-ray tomography validates the parameterisation.
+    """
+    a0, c2, s2, c4, s4 = (np.asarray(x) for x in (a0, c2, s2, c4, s4))
+    mask = np.asarray(mask) > 0.5
+    shape = a0.shape
+    idx = np.where(mask); nvox = len(idx[0])
+    th = np.linspace(0.0, np.pi, n_angles, endpoint=False)
+    prof = (a0[idx][:, None] + c2[idx][:, None] * np.cos(2 * th)
+            + s2[idx][:, None] * np.sin(2 * th) + c4[idx][:, None] * np.cos(4 * th)
+            + s4[idx][:, None] * np.sin(4 * th))                      # (nvox, K)
+    Y = prof.T                                                        # (K, nvox)
+    grid = np.linspace(0.0, np.pi, n_grid, endpoint=False)
+    basis = [np.sin(th - p) ** (2 * sharpness) for p in grid]
+    ones = np.ones(n_angles)
+
+    best = np.full(nvox, np.inf)
+    b_iso = np.zeros(nvox); b_a1 = np.zeros(nvox); b_a2 = np.zeros(nvox)
+    b_p1 = np.zeros(nvox); b_p2 = np.zeros(nvox)
+    for i in range(n_grid):
+        for j in range(i, n_grid):
+            A = np.stack([ones, basis[i], basis[j]], 1)              # (K, 3)
+            coef, *_ = np.linalg.lstsq(A, Y, rcond=None)             # (3, nvox)
+            res = np.mean((A @ coef - Y) ** 2, 0)                    # (nvox,)
+            ok = (coef[1] >= -1e-6) & (coef[2] >= -1e-6)
+            upd = (res < best) & ok
+            best[upd] = res[upd]
+            b_iso[upd] = coef[0][upd]; b_a1[upd] = coef[1][upd]; b_a2[upd] = coef[2][upd]
+            b_p1[upd] = grid[i]; b_p2[upd] = grid[j]
+
+    prim = b_a1 >= b_a2                                              # order primary first
+    a1v = np.where(prim, b_a1, b_a2); a2v = np.where(prim, b_a2, b_a1)
+    p1v = np.where(prim, b_p1, b_p2); p2v = np.where(prim, b_p2, b_p1)
+
+    def scatter(v):
+        out = np.zeros(shape); out[idx] = v; return out
+    return OdfCrossingMaps(phi1=scatter(p1v % np.pi), phi2=scatter(p2v % np.pi),
+                           a1=scatter(a1v), a2=scatter(a2v), iso=scatter(b_iso))
+
+
+@dataclass
 class TwoFibreFit:
     iso: float
     a1: float
