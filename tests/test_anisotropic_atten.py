@@ -86,3 +86,30 @@ def test_anisotropy_separates_wm_from_gm_with_identical_isotropic_alpha():
     assert wm_aniso > 3 * max(gm_aniso, 1e-6), (
         f"anisotropy did not separate WM({wm_aniso:.3f}) from GM({gm_aniso:.3f})")
     assert wm_aniso > 0.3, f"WM anisotropy under-recovered: {wm_aniso:.3f} (true 0.5)"
+
+
+@pytest.mark.slow
+def test_blind_joint_recovery_with_homogeneous_bulk_prior():
+    """BLIND (no bulk supplied): a homogeneous-bulk structural prior — the Living
+    Matter Lab way of taming an ill-posed inversion — makes the joint bulk +
+    anisotropy recovery identifiable. The bulk cannot absorb sharp WM structure,
+    so it lands in the anisotropy channel; WM/GM separate ~10x and the scalar
+    bulk recovers ~truth."""
+    from brain_fwi.inversion.anisotropic_atten import (
+        make_ring_rays, forward_ray_decay, invert_anisotropic)
+    N, dx = 40, 1.0e-3
+    yy, xx = np.meshgrid(np.arange(N), np.arange(N), indexing="ij")
+    r = np.sqrt((xx - N / 2) ** 2 + (yy - N / 2) ** 2)
+    brain = r <= N * 0.4; wm = r <= N * 0.22; gm = brain & ~wm
+    a_iso = np.where(brain, 0.6, 0.0).astype(np.float32)
+    a_aniso = np.where(wm, 0.5, 0.0).astype(np.float32)
+    phi = np.full((N, N), 0.6, np.float32)
+    rays = make_ring_rays(N, dx, n_trans=64, radius_frac=0.46)
+    obs = forward_ray_decay(jnp.asarray(a_iso), jnp.asarray(a_aniso), jnp.asarray(phi), rays)
+
+    rec = invert_anisotropic(obs, rays, jnp.asarray(phi), (N, N),   # a_iso=None -> blind
+                             mask=jnp.asarray(brain.astype(np.float32)), n_iters=3000)
+    aa = np.asarray(rec.a_aniso); ai = np.asarray(rec.a_iso)
+    assert aa[wm].mean() > 3 * max(aa[gm].mean(), 1e-6), (
+        f"blind: anisotropy WM({aa[wm].mean():.3f}) vs GM({aa[gm].mean():.3f})")
+    assert abs(ai[brain].mean() - 0.6) < 0.1, f"blind bulk off: {ai[brain].mean():.3f} (true 0.6)"

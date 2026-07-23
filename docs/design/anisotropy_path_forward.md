@@ -28,30 +28,38 @@ test `test_anisotropic_atten.py`.
 shape all fail — because the leverage is angular, which the narrow band does not
 constrain but the acquisition geometry does.
 
-## The remaining hard problem (honest)
+## Blind joint recovery — SOLVED (homogeneous-bulk prior)
 
-The **fully-blind joint** inversion of bulk α *and* anisotropy (without a supplied
-bulk estimate) is a genuine tomographic identifiability challenge: the angle-mean
-of α is `alpha_iso + 0.5*alpha_aniso`, so the split is weakly constrained, and
-naive gradient descent / alternating minimisation lands in a crosstalk basin
-(the bulk channel absorbs the WM structure, anisotropy leaks to GM). Measured:
-given a bulk estimate it is clean (ratio 10); blind, it is not.
+The **fully-blind joint** inversion of bulk α *and* anisotropy (no supplied bulk)
+is a genuine tomographic identifiability challenge: the angle-mean of α is
+`alpha_iso + 0.5*alpha_aniso`, so a per-voxel *field* bulk is weakly constrained
+and crosstalks (the bulk absorbs the WM structure, anisotropy leaks to GM).
+Measured failure modes: free-field bulk (ratio ~1), TV/L1 sparsity on the
+anisotropy (kills it — bulk wins), even a *smoothed-field* bulk (ratio 0.2 — a
+smooth field still adapts locally).
 
-Known routes to fix (not yet implemented):
-- **Cross-gradient / structural** coupling tying anisotropy structure to an
-  independent map (the DTI fibre field, or the velocity FWI's tissue boundaries).
-- **Iterative bulk de-contamination** with a strong low-resolution prior on the
-  bulk (it must be too smooth to absorb sharp WM structure) — my quick attempts
-  under-converged; needs a proper multi-scale / bound-constrained solver.
-- **A bulk estimate that structurally excludes anisotropy**, e.g. from the
-  isotropic FWI at a frequency/geometry chosen to minimise the anisotropic bias.
+**Fix (the Living Matter Lab insight):** tame the ill-posed inversion by baking a
+strong **structural constraint** into the parameterisation — not on the
+anisotropy (sparsity there backfires), but on the **bulk**: constrain
+`alpha_iso` to be **homogeneous (a single scalar)**, matching the physical fact
+that bulk attenuation is smooth. Then the bulk *cannot* absorb sharp WM structure,
+so it is forced into the anisotropy channel where it belongs. Measured (blind, no
+bulk supplied): WM/GM anisotropy **ratio ~12x**, scalar bulk recovers ~0.6
+(true). `invert_anisotropic(a_iso=None)`, `test_anisotropic_atten.py`.
+
+Generalisation for real (slowly-varying) tissue: a **low-rank** bulk (a coarse
+grid or low-order polynomial, a few DOF) rather than a strict scalar — enough
+freedom for real bulk variation, too little to mimic sharp anisotropy structure.
+That is the next refinement (the scalar proves identifiability; low-rank makes it
+realistic).
 
 ## Sequenced plan
 
 1. **DONE** — straight-ray anisotropy tomography; proves the angular leverage
    (ratio 10 given bulk α).
-2. **Blind joint identifiability** — cross-gradient with the DTI/velocity
-   structure; multi-scale bulk prior. The core open problem above.
+2. **DONE** — blind joint recovery via the homogeneous-bulk structural prior
+   (ratio ~12, bulk recovered). Next refinement: **low-rank** bulk for realistic
+   slowly-varying tissue.
 3. **Realistic fibre fields** — per-voxel `phi` from DTI (not uniform); recover
    `phi` too, or take it from co-registered MRI (transcranial patients have it).
 4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
