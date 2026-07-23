@@ -99,9 +99,20 @@ realistic).
    `fit_two_fibres` (grid-refine, recovers BOTH directions to <10 deg for a sharp
    crossing). Honest limit: **soft (sin^2) crossings are never resolvable**
    (orthogonal soft crossing even degenerates to isotropic); resolvability needs a
-   physically sharp attenuation profile. Next: fit the per-voxel attenuation ODF
-   in the tomography (replace the single-phi field with 2-theta+4-theta harmonic
-   fields) to fix the DiSCo hub end-to-end.
+   physically sharp attenuation profile.
+
+   **Per-voxel attenuation-ODF tomography — DONE.** `forward_ray_decay_odf` /
+   `invert_odf` invert the full per-voxel angular ODF (a0 homogeneous bulk +
+   2-theta AND 4-theta harmonic *fields*), so the tomography *carries* the
+   crossing information the single-phi model discards. On a crossing phantom
+   (central patch of two orthogonal sharp fibres vs a single-fibre surround) the
+   recovered 4-theta crossing map (`crossing_index_map`) is ~2x elevated in the
+   crossing patch — where the single-phi model sees LOW anisotropy (2-theta
+   cancels) and mis-reads the crossing as near-isotropic. `sin4_odf_coeffs` builds
+   the ground-truth ODF; `test_odf_tomography.py`. The 4-theta channel is
+   higher-order/weaker (light smoothing), so recovered contrast is modest (~2x,
+   not the true near-infinite ratio) — honest 4-theta SNR. Next: per-voxel
+   two-fibre fit on the recovered ODF for explicit crossing directions; 3D.
 4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
    absorber (route A of `cann_forward_scoping.md`, but *anisotropic* moduli) or,
    cheaper first, per-angle isotropic α inversions assembled into α(θ) and fed to

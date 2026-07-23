@@ -51,6 +51,28 @@ def crossing_index(h) -> float:
     return float(p4 / (p2 + 1e-9))
 
 
+def sin4_odf_coeffs(a_iso, amps, phis):
+    """Angular-ODF harmonics {a0, c2, s2, c4, s4} of an isotropic baseline plus a
+    set of sharp (sin^4) fibres. Uses sin^4(x) = 3/8 - 1/2 cos2x + 1/8 cos4x.
+
+    ``amps``/``phis`` are broadcastable arrays with a trailing fibre axis (amp=0
+    for empty slots). Returns five arrays with the leading (spatial) shape.
+    """
+    amps = np.asarray(amps); phis = np.asarray(phis)
+    a0 = np.asarray(a_iso) + (amps * 3.0 / 8.0).sum(-1)
+    c2 = (amps * (-0.5) * np.cos(2 * phis)).sum(-1)
+    s2 = (amps * (-0.5) * np.sin(2 * phis)).sum(-1)
+    c4 = (amps * (1.0 / 8.0) * np.cos(4 * phis)).sum(-1)
+    s4 = (amps * (1.0 / 8.0) * np.sin(4 * phis)).sum(-1)
+    return a0, c2, s2, c4, s4
+
+
+def crossing_index_map(c2, s2, c4, s4):
+    """Per-voxel |4theta|/|2theta| crossing map from ODF-harmonic fields."""
+    c2 = np.asarray(c2); s2 = np.asarray(s2); c4 = np.asarray(c4); s4 = np.asarray(s4)
+    return np.hypot(c4, s4) / (np.hypot(c2, s2) + 1e-9)
+
+
 @dataclass
 class TwoFibreFit:
     iso: float

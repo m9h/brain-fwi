@@ -182,6 +182,75 @@ def invert_anisotropic(obs, rays: Rays, phi, grid_shape, mask=None, a_iso=None,
     return AnisoResult(a_iso=ai, a_aniso=aa, loss_history=hist)
 
 
+def forward_ray_decay_odf(a0, c2, s2, c4, s4, rays: Rays):
+    """Per-ray decay for a full per-voxel angular-attenuation ODF
+    ``alpha(theta) = a0 + c2 cos2theta + s2 sin2theta + c4 cos4theta + s4 sin4theta``
+    (linear in all five harmonic fields). The 4-theta fields carry the crossing
+    information that the 2-theta-only (single-phi) model discards.
+    """
+    ca2 = jnp.cos(2.0 * rays.angles); sa2 = jnp.sin(2.0 * rays.angles)
+    ca4 = jnp.cos(4.0 * rays.angles); sa4 = jnp.sin(4.0 * rays.angles)
+
+    def one(coords, c2r, s2r, c4r, s4r, ds):
+        A0 = map_coordinates(a0, coords, order=1, mode="constant", cval=0.0)
+        C2 = map_coordinates(c2, coords, order=1, mode="constant", cval=0.0)
+        S2 = map_coordinates(s2, coords, order=1, mode="constant", cval=0.0)
+        C4 = map_coordinates(c4, coords, order=1, mode="constant", cval=0.0)
+        S4 = map_coordinates(s4, coords, order=1, mode="constant", cval=0.0)
+        return jnp.sum(A0 + C2 * c2r + S2 * s2r + C4 * c4r + S4 * s4r) * ds
+    return jax.vmap(one)(rays.coords, ca2, sa2, ca4, sa4, rays.ds)
+
+
+@dataclass
+class OdfResult:
+    a0: jnp.ndarray
+    c2: jnp.ndarray
+    s2: jnp.ndarray
+    c4: jnp.ndarray
+    s4: jnp.ndarray
+    loss_history: list
+
+
+def invert_odf(obs, rays: Rays, grid_shape, mask=None, n_iters: int = 6000,
+               lr: float = 3e-2, smooth: float = 1e-5) -> OdfResult:
+    """Blindly recover the per-voxel attenuation ODF (2-theta AND 4-theta harmonic
+    fields) with a homogeneous (scalar) bulk ``a0`` — the tomographic upgrade that
+    carries fibre-crossing information (via the 4-theta fields), resolving the
+    crossings the single-phi model averages away."""
+    obs = jnp.asarray(obs)
+    m = jnp.ones(grid_shape) if mask is None else jnp.asarray(mask)
+    params = {"rb": jnp.asarray(-1.0),
+              "c2": jnp.zeros(grid_shape), "s2": jnp.zeros(grid_shape),
+              "c4": jnp.zeros(grid_shape), "s4": jnp.zeros(grid_shape)}
+
+    def lap(f):
+        return (f - 0.25 * (jnp.roll(f, 1, 0) + jnp.roll(f, -1, 0)
+                            + jnp.roll(f, 1, 1) + jnp.roll(f, -1, 1))) * m
+
+    def loss_fn(p):
+        a0 = jax.nn.softplus(p["rb"]) * m                # homogeneous bulk
+        fields = [p[k] * m for k in ("c2", "s2", "c4", "s4")]
+        pred = forward_ray_decay_odf(a0, *fields, rays)
+        reg = smooth * sum(jnp.mean(lap(f) ** 2) for f in fields)
+        return jnp.mean((pred - obs) ** 2) + reg
+
+    opt = optax.adam(lr); state = opt.init(params)
+
+    @jax.jit
+    def step(p, s):
+        loss, g = jax.value_and_grad(loss_fn)(p)
+        upd, s = opt.update(g, s)
+        return optax.apply_updates(p, upd), s, loss
+
+    hist = []
+    for _ in range(n_iters):
+        params, state, loss = step(params, state)
+        hist.append(float(loss))
+    a0 = jax.nn.softplus(params["rb"]) * m
+    return OdfResult(a0=a0, c2=params["c2"] * m, s2=params["s2"] * m,
+                     c4=params["c4"] * m, s4=params["s4"] * m, loss_history=hist)
+
+
 def invert_orientation(obs, rays: Rays, grid_shape, mask=None,
                        n_iters: int = 3000, lr: float = 3e-2,
                        smooth: float = 3e-4) -> AnisoResult:
