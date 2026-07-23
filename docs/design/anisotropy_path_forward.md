@@ -117,12 +117,23 @@ realistic).
    attenuation unknowns a full-wave FWI would invert — the ray tomography validates
    the parameterisation before the expensive j-Wave build.** Next: 3D; the
    anisotropic/Prony absorber to carry this into j-Wave FWI on real anatomy.
-4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
-   absorber (route A of `cann_forward_scoping.md`, but *anisotropic* moduli) or,
-   cheaper first, per-angle isotropic α inversions assembled into α(θ) and fed to
-   the **anisotropic CANN discovery already built**
-   (`alpha_basis_library_anisotropic`) — closing the loop to the constitutive
-   model.
+4. **Full-wave multi-angle — anisotropic absorber OPERATOR done (prototype).**
+   Directional acoustic loss as a per-voxel symmetric attenuation **tensor**
+   `D(x)`, applied via `sum_ij D_ij d_i d_j (field)`
+   (`simulation/anisotropic_absorber.py`). Key properties (all tested,
+   `test_anisotropic_absorber.py`): (a) **local** — spectral second derivatives
+   contracted with a local tensor, so spatially-varying anisotropy works (unlike
+   the isotropic fractional-Laplacian's global exponent); (b) for a plane wave the
+   loss coefficient is `k^T D k/|k|^2 = a_par cos^2(theta-phi) + a_perp
+   sin^2(theta-phi)` — **exactly the sandbox `sin^2(theta-phi)` model, so this
+   absorber IS the full-wave implementation of the whole anisotropy program**;
+   (c) **differentiable** w.r.t. the tensor fields (the FWI unknowns); (d) the
+   **acoustic analogue of the DTI diffusion tensor** (same rank-2 symmetric form),
+   which is why diffusion FA/orientation is the physical ground truth. Remaining:
+   integrate this tensor loss into the j-Wave fork's Treeby-Cox pressure update
+   (replacing the isotropic `|k|^p` term), k-Wave-validate, and invert the tensor
+   fields end-to-end in a full-wave anisotropic FWI. This is the fork build the
+   sandbox now fully specifies.
 5. **3D + fibre crossings** — the real anatomy; the 2D `sin^2` becomes a
    structural-tensor form (the CANN I4/I5 analogue).
 
