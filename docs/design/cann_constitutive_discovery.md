@@ -35,8 +35,18 @@ gray vs white matter.
 1. **Isotropic ⇒ magnitude, not shape.** Kuhl's own brain result says GM/WM share
    the functional law and differ in magnitude. Our tables agree (same exponent
    1.3; α 0.6 vs 0.9). So an *isotropic* α(ω) CANN does **not** give a new
-   orthogonal discriminator — GM/WM discrimination stays magnitude/SNR-limited
-   (consistent with the #48 study: α recovery tops out ~50%).
+   orthogonal *shape* discriminator — the split rests on recovering the magnitude.
+
+   **But the magnitude channel is more usable than #48 suggested (measured).**
+   Pure multi-band brain α inversion — **coupling OFF, prior OFF**, c known,
+   preconditioned, 64³ — recovers the *correct ordering*: GM α 0.625 (true 0.6),
+   WM α 1.586 (true 0.9), **WM > GM**, separability 1.69. WM magnitude is
+   over-estimated (~1.8×) so it is not yet quantitative, but GM/WM are clearly
+   *distinguished*. Crucially, the c→α **coupling must be OFF** here: it is
+   degenerate for GM/WM (equal c) and actively homogenises the brain — in the
+   capstone it produced the *wrong* ordering (GM 0.87 > WM 0.72). Lesson: use the
+   coupling only where c contrasts (skull, lesions), never inside homogeneous-c
+   brain tissue.
 2. **The shape discriminator is ANISOTROPY.** White matter is fibre-oriented and
    its attenuation is direction-dependent; gray matter is isotropic. That is the
    structural-tensor (I₄/I₅-analog) extension Kuhl explicitly did *not* activate
