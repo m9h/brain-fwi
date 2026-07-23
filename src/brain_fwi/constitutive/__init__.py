@@ -8,6 +8,7 @@ from .discovery import (
     discover_tissue_alpha_law,
 )
 from .kk import kk_consistency_loss, kramers_kronig_dispersion
+from .relaxation import RelaxationFit, fit_relaxation_spectrum, relaxation_alpha
 from .manifold import (
     manifold_prior_grad,
     manifold_proximal,
@@ -25,6 +26,9 @@ __all__ = [
     "discover_tissue_alpha_law",
     "kk_consistency_loss",
     "kramers_kronig_dispersion",
+    "RelaxationFit",
+    "fit_relaxation_spectrum",
+    "relaxation_alpha",
     "manifold_prior_grad",
     "manifold_proximal",
     "tissue_alpha_coefficients",

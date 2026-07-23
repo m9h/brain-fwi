@@ -55,14 +55,22 @@ error (standard result in viscoelastic wave modelling).
 
 - **Cost:** `N_mech` auxiliary fields (memory ↑ by ~N_mech×) and a local update
   per step (cheap vs the FFTs). Manageable at 96³–192³ with the checkpointed scan.
-- **Measured caveat (2026-07-22).** A *fixed-relaxation-time, moduli-only*
-  (non-negative linear) fit of the Debye basis reproduces α ∝ f (constant-Q)
-  naturally but only ~10–15 % for a y = 1.3 tissue power law with a few
-  mechanisms (quick NNLS check over 50–300 kHz). Hitting <5 % requires
-  **optimising the relaxation times too** (nonlinear) or more mechanisms — the
-  standard viscoelastic-modelling step (Emmerich & Korn 1987, *Geophysics*;
-  Blanch, Robertsson & Symes 1995). So milestone 1 must optimise moduli **and**
-  times, not just moduli — budget for it; it is not a one-line linear fit.
+- **Measured result (2026-07-22, milestone 1 done — `relaxation.py`,
+  `test_relaxation_spectrum.py`).** Fitting the relaxation spectrum with **both**
+  moduli and relaxation times optimised (nonlinear Adam, bounded in-band freqs):
+  **constant-Q (α ∝ f, y = 1) fits to <3 %**, but a **y = 1.3 power law only to
+  ~9 %** over the 50–300 kHz band — and this does **not** improve with more
+  mechanisms, more steps, or a relative-error loss (the mechanisms flee to the
+  band edges). It is not a fitting bug: a Debye relaxation spectrum is naturally
+  constant-Q, and the **narrow transcranial band (~half a decade, forced sub-MHz
+  by skull attenuation) gives too little frequency leverage to pin an exponent
+  ≠ 1.** Implications: (i) a Prony absorber is an excellent *constant-Q* tissue
+  model (a defensible approximation); (ii) representing — let alone *inverting* —
+  a per-tissue y ≠ 1 **spectral shape** over this band is leverage-limited, which
+  **reinforces that GM/WM discrimination must lean on magnitude and ANISOTROPY
+  (angular leverage), not spectral shape over frequency.** The forward change
+  buys physically-correct broadband α and the *anisotropic* extension — not a
+  spectral-shape GM/WM separator (the narrow band cannot supply one).
 - **Causality:** each relaxation mechanism has an analytic Kramers–Kronig
   dispersion partner — causality is structural (no penalty needed), unlike the
   fractional form's explicit `disp` term.
@@ -94,11 +102,11 @@ loss. Two options, mirroring the routes above:
 
 ## Recommended plan (staged, each a shippable increment)
 
-1. **Fit the relaxation spectrum first (constitutive, no solver).** Optimise
-   *both* moduli and relaxation times (nonlinear) so N mechanisms reproduce a
-   tissue power law α(ω) over 50–300 kHz. *Gate:* <5% α(ω) error — expect this
-   needs ~4–6 mechanisms with optimised times (the moduli-only fit stalls at
-   ~10–15%, see caveat above). This de-risks the absorber before any solver work.
+1. **Fit the relaxation spectrum first (constitutive, no solver).** **DONE** —
+   `fit_relaxation_spectrum` (moduli + times, nonlinear). Result: constant-Q <3%,
+   y = 1.3 ~9% (band-leverage-limited; see the measured result above). Verdict:
+   proceed with a **constant-Q Prony absorber** as the tissue model; do **not**
+   rely on spectral shape for GM/WM.
 2. **Prototype the multi-relaxation absorber** (route A) as a brain-fwi forward
    variant (not yet the jwave fork): per-voxel moduli, the milestone-1 times.
    Validate vs the fractional absorber and k-Wave (reuse
