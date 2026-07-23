@@ -67,8 +67,20 @@ gray vs white matter.
 | # | Gap | Status |
 |---|---|---|
 | 1 | No sparse **model discovery** (only fixed-2-mode Adam fit) | **DONE** — `discovery.py` |
-| 2 | CANN is **not the FWI parameterisation** (scalar α, fixed exponent) | open |
-| 3 | Forward **can't evaluate α(ω) from a CANN** (`build_medium` takes one scalar `alpha_power`) | open |
+| 2 | CANN is **not the FWI parameterisation** (scalar α, fixed exponent) | open (bridge below sidesteps it) |
+| 3 | Forward **can't evaluate α(ω) from a CANN** (`build_medium` takes one scalar `alpha_power`) | open (bridge below sidesteps it) |
+| — | **FWI → CANN bridge** (two-stage: invert per band, then discover) | **DONE** |
+
+### FWI → CANN bridge (`discover_tissue_alpha_law`, `attenuation_history`)
+The tractable realisation of #2/#3 without rewriting the Treeby–Cox absorber:
+multi-band FWI already recovers attenuation at several centre frequencies, so
+`run_fwi` now snapshots per-band α into `FWIResult.attenuation_history`, and
+`discover_tissue_alpha_law(band_freqs, per_band_regional_α)` runs the L0 discovery
+on those α(ω) samples — Kuhl's "measure at many conditions, then discover"
+workflow. `test_fwi_cann_bridge.py`: recovers a power-law from band samples, and
+ranks **GM < WM** even under the measured WM over-estimation bias. A future
+single-stage version would invert CANN parameters directly (still needs the
+per-voxel-α(ω) forward, #3).
 
 ### #1 done — `constitutive/discovery.py`
 `alpha_basis_library(omega)` builds an over-complete, **non-negative, DC-vanishing**

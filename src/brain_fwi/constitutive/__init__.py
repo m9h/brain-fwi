@@ -5,6 +5,7 @@ from .discovery import (
     alpha_basis_library,
     alpha_basis_library_anisotropic,
     discover_alpha_law,
+    discover_tissue_alpha_law,
 )
 from .kk import kk_consistency_loss, kramers_kronig_dispersion
 from .manifold import (
@@ -21,6 +22,7 @@ __all__ = [
     "alpha_basis_library",
     "alpha_basis_library_anisotropic",
     "discover_alpha_law",
+    "discover_tissue_alpha_law",
     "kk_consistency_loss",
     "kramers_kronig_dispersion",
     "manifold_prior_grad",

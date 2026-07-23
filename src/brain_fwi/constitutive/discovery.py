@@ -130,6 +130,32 @@ def _nnls(A: np.ndarray, b: np.ndarray, iters: int = 800) -> np.ndarray:
     return w
 
 
+def discover_tissue_alpha_law(
+    band_center_freqs_hz: Sequence[float],
+    alpha_at_band: Sequence[float],
+    exponents: Sequence[float] = (1.0, 1.1, 1.3, 1.5, 2.0),
+    taus: Optional[Sequence[float]] = None,
+    l0_penalty: float = 1e-3,
+) -> "DiscoveryResult":
+    """Discover a tissue's alpha(omega) law from per-band FWI attenuation.
+
+    The FWI -> CANN bridge: multi-band FWI recovers attenuation at several centre
+    frequencies (``alpha_at_band[k]`` = recovered attenuation, dB/cm/MHz, for band
+    ``k`` at ``band_center_freqs_hz[k]``); this assembles them into alpha(omega)
+    samples and runs the L0 constitutive discovery (Kuhl's "measure at many
+    conditions, then discover" workflow). No CANN evaluation in the forward is
+    required — the frequency dependence comes from the *band-wise* estimates.
+
+    Returns a :class:`DiscoveryResult`; ``sum(weights)`` is a convenient scalar
+    attenuation-magnitude proxy for ranking tissues (e.g. WM vs GM).
+    """
+    f = np.asarray(band_center_freqs_hz, float)
+    a = np.asarray(alpha_at_band, float)
+    omega = jnp.asarray(2.0 * np.pi * f)
+    Phi, names = alpha_basis_library(omega, exponents=exponents, taus=taus)
+    return discover_alpha_law(jnp.asarray(a), Phi, names, l0_penalty)
+
+
 @dataclass
 class DiscoveryResult:
     """Outcome of :func:`discover_alpha_law`."""

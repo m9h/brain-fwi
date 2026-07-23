@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 import numpy as np
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
@@ -208,6 +209,10 @@ class FWIResult:
     # Phase 6: recovered attenuation field (dB/cm/MHz^alpha_power) when
     # ``invert_attenuation=True``; None for the velocity-only path.
     attenuation: Optional[jnp.ndarray] = None
+    # Per-band attenuation snapshots (one per frequency band) — the alpha(omega)
+    # samples the CANN discovery (`discover_tissue_alpha_law`) consumes. Empty on
+    # the velocity-only path.
+    attenuation_history: List[jnp.ndarray] = dataclasses.field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +571,7 @@ def run_fwi(
 
     loss_history = []
     velocity_history = []
+    attenuation_history = []
     start_band = 0
 
     # Resume from checkpoint if available. Multiparameter (Phase 6) state is not
@@ -729,8 +735,12 @@ def run_fwi(
                       f"loss={loss_val:.6f}, "
                       f"c=[{float(jnp.min(_c)):.0f}, {float(jnp.max(_c)):.0f}] m/s")
 
-        # Save velocity snapshot at end of band
+        # Save velocity (and, for Phase 6, attenuation) snapshot at end of band.
+        # The per-band α snapshots are the α(ω) samples the CANN discovery
+        # (discover_tissue_alpha_law) consumes.
         velocity_history.append(_velocity_of(params))
+        if config.invert_attenuation:
+            attenuation_history.append(params["a"])
 
         # Checkpoint to disk for resume after preemption (velocity-only path)
         if config.checkpoint_dir and not config.invert_attenuation:
@@ -749,6 +759,7 @@ def run_fwi(
         params=final_velocity,
         field=VoxelField(params=final_velocity),
         attenuation=params["a"] if isinstance(params, dict) else None,
+        attenuation_history=attenuation_history,
     )
 
 
