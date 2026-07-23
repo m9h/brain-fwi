@@ -72,6 +72,19 @@ realistic).
    magnitude with that phi — sharpens it (ratio ~2.7 and rising). Remaining:
    per-voxel *varying* phi (curved tracts) and recovering phi where a_aniso is
    weak.
+
+   **Real curved/crossing tracts (DiSCo diffusion phantom) — DONE (first result).**
+   Using the sbi4dwi DiSCo numerical phantom (known curving/crossing fibre
+   strands): DTI-fit → per-voxel fibre direction phi(x) + FA; paint
+   `alpha_aniso ~ FA*(in-plane)`, `phi = fibre angle`; recover blindly.
+   Measured: fibre direction to **~12 deg median** and anisotropy-magnitude
+   correlation **0.58** on the 7-arm pinwheel — the strand geometry is clearly
+   reproduced. Degrades at the central **crossing** hub (single-fibre model and
+   DTI V1 both average crossings). `scripts/anisotropy_disco_demo.py`
+   (+ `_extract_disco_fiber.py`), figure `anisotropy_disco.png`. The physical
+   basis: acoustic-attenuation anisotropy and diffusion anisotropy share the same
+   white-matter fibre microstructure, so DTI FA/orientation is the ground truth.
+   Next: a **multi-fibre** (two-direction) model for crossings; 3D.
 4. **Full-wave multi-angle** — carry the leverage into j-Wave: the anisotropic
    absorber (route A of `cann_forward_scoping.md`, but *anisotropic* moduli) or,
    cheaper first, per-angle isotropic α inversions assembled into α(θ) and fed to
