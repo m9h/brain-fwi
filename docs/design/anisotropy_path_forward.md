@@ -143,3 +143,17 @@ GM/WM is **not** out of reach — but the reachable signal is **anisotropy**, no
 speed, magnitude, or spectrum. The angular leverage is real and recoverable
 (proven); the open work is the blind bulk/anisotropy identifiability and carrying
 it into the full-wave solver with realistic fibre fields.
+
+
+## Full-wave anisotropic FWI — DONE (homogeneous tensor)
+
+`scripts/anisotropic_fwi_demo.py` / `test_anisotropic_fwi.py`: invert the
+attenuation tensor `(a_par, a_perp, fibre angle phi)` of a homogeneous anisotropic
+medium from ring transmission, through the REAL j-Wave adjoint (the validated
+anisotropic absorber, jwave feature/anisotropic-absorption). From an isotropic
+wrong start it recovers **a_par 1.89 (true 2.0), a_perp 8.42 (8.0), phi 0.49
+(0.50) — fibre orientation to 0.8 deg**, ratio 4.4 (4.0), in ~40 s. This is the
+full-wave counterpart of the ray-tomography sandbox: acoustic tractography through
+the wave equation. Remaining: spatially-VARYING phi needs the anisotropic
+RELAXATION (Prony) absorber (per-voxel, memory-variable regularised — the
+mean-tensor form is homogeneous-anisotropy only); then per-voxel tensor-field FWI.
