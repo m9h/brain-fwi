@@ -64,12 +64,27 @@ SCI_TO_BRAINWEB = {0: 0, 1: 6, 2: 7, 3: 1, 4: 2, 5: 3}
 # ---------------------------------------------------------------------------
 # The ITRUSST table above assigns grey and white matter identical properties
 # (both 1560 m/s, 0.6 dB/cm/MHz) — faithful to the benchmark but zero contrast,
-# so a reconstruction cannot be scored for GM/WM. Real tissue separates mainly
-# in ATTENUATION: Kang et al. (Ultrasonics 2022) measure white-matter
-# attenuation ~1.5x grey-matter, while the sound-speed difference sits at the
-# measurement noise floor (SD 10-14 m/s). This is *why* Phase 6 inverts
-# attenuation. Contrast is OPT-IN so the default table stays ITRUSST-faithful.
-GM_WM_ALPHA_RATIO = 1.5  # Kang et al. 2022
+# so a reconstruction cannot be scored for GM/WM.
+#
+# IMPORTANT — this table's GM==WM speed is a BENCHMARK CONVENTION, NOT PHYSICS.
+# Treating it as physics produced a false premise ("velocity FWI is structurally
+# blind to GM/WM") that mis-steered the project. Real tissue separates in BOTH
+# channels:
+#   * ATTENUATION — WM ~1.5x GM (Kang et al., Ultrasonics 2022).
+#   * SOUND SPEED — ~17 m/s (~1%). Mitcham et al., Med. Phys. 2025
+#     (DOI 10.1002/mp.18090) measure ex-vivo human WM (corpus callosum)
+#     1639 +/- 3 vs GM (cerebellum) 1656 +/- 6 m/s. Note the tight error bars:
+#     this is a 3-5 sigma separation, NOT "at the noise floor" as older
+#     estimates (SD 10-14 m/s) suggested. Ex-vivo fixation elevates the absolute
+#     values (~1650 vs in-vivo ~1560), so only the DIFFERENCE transfers.
+#     Literature is not consistent on the SIGN; detection of a GM/WM boundary
+#     does not depend on it.
+# The real constraint on seeing GM/WM in a velocity map is RESOLUTION, not
+# contrast: the cortical ribbon is 2.5-4 mm, so it needs >=300-500 kHz
+# (lambda/2 = 2.6-1.6 mm). Below ~200 kHz it is unresolvable at any contrast.
+# Contrast is OPT-IN so the default table stays ITRUSST-faithful.
+GM_WM_ALPHA_RATIO = 1.5   # Kang et al. 2022
+GM_WM_C_DELTA = -17.0     # WM - GM sound speed (m/s), Mitcham et al. 2025
 
 
 def tissue_properties_contrasted(
@@ -79,15 +94,19 @@ def tissue_properties_contrasted(
 ) -> Dict[int, Tuple[float, float, float]]:
     """A copy of :data:`TISSUE_PROPERTIES` with a measured GM/WM contrast.
 
-    Attenuation is the physically-robust discriminator (Kang 2022), so white
-    matter (label 3) gets ``alpha_ratio`` x grey matter's attenuation. Sound
-    speed / density deltas are opt-in (default 0) because speed barely separates
-    the tissues. Grey matter and all other tissues are untouched; the global
-    table is NOT mutated.
+    White matter (label 3) gets ``alpha_ratio`` x grey matter's attenuation
+    (Kang 2022) and, optionally, a sound-speed offset. Grey matter and all other
+    tissues are untouched; the global table is NOT mutated.
+
+    ``wm_c_delta`` defaults to 0 to preserve backwards compatibility, but for a
+    PHYSICALLY REALISTIC phantom pass ``wm_c_delta=GM_WM_C_DELTA`` (-17 m/s,
+    Mitcham 2025). Speed is *not* negligible — see the module note above; the
+    binding constraint on resolving GM/WM is imaging frequency, not contrast.
 
     Args:
         alpha_ratio: WM/GM attenuation ratio (default 1.5, Kang 2022).
-        wm_c_delta: optional WM sound-speed offset (m/s) added to GM's speed.
+        wm_c_delta: WM sound-speed offset (m/s) added to GM's speed. Pass
+            :data:`GM_WM_C_DELTA` for the measured value.
         wm_rho_delta: optional WM density offset (kg/m^3).
 
     Returns:

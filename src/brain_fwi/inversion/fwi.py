@@ -148,6 +148,14 @@ class FWIConfig:
     attenuation_release_frac: float = 0.0
 
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
+    # Segmented GRADIENT checkpointing (distinct from checkpoint_dir disk resume).
+    # None = auto: enabled when the stored backward tape would exceed
+    # ``checkpoint_tape_gb``. Backward memory ~ nt * ndim * prod(grid) * 4 bytes,
+    # so it is driven by nt AS WELL AS grid size — a 112^3 grid with 1155 steps
+    # needs ~19 GB and OOMs, which a grid-size-only rule (>=128^3) misses.
+    # True/False force it on/off.
+    use_gradient_checkpointing: Optional[bool] = None
+    checkpoint_tape_gb: float = 8.0
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
     # Illumination "water level" for preconditioning, as a fraction of peak
     # illumination. The gradient is divided by ``illum + precondition_floor *
@@ -479,6 +487,24 @@ def _alpha_released(band_idx: int, it: int, config: "FWIConfig") -> bool:
     return bool(global_iter >= config.attenuation_release_frac * total)
 
 
+
+def _decide_checkpointing(config, grid_shape, n_time_steps) -> bool:
+    """Whether to use segmented gradient checkpointing for the forward solve.
+
+    The reverse-mode tape stores the full time history of the velocity field:
+    ``nt * ndim * prod(grid) * 4`` bytes. That is driven by the number of TIME
+    STEPS as much as by grid size, so the old grid-only rule (all dims >= 128)
+    silently missed cases like 112^3 x 1155 steps (~19 GB -> OOM) while firing
+    on smaller-tape 128^3 runs. ``config.use_gradient_checkpointing`` forces the
+    decision when not None.
+    """
+    if config.use_gradient_checkpointing is not None:
+        return bool(config.use_gradient_checkpointing)
+    ndim = len(grid_shape)
+    tape_gb = n_time_steps * ndim * float(np.prod(grid_shape)) * 4.0 / 1e9
+    return tape_gb > config.checkpoint_tape_gb
+
+
 def run_fwi(
     observed_data: jnp.ndarray,
     initial_velocity: jnp.ndarray,
@@ -642,8 +668,7 @@ def run_fwi(
             grad_accum = jax.tree_util.tree_map(jnp.zeros_like, params)
             grad_sq_accum = jax.tree_util.tree_map(jnp.zeros_like, params)
 
-            # Use checkpointed scan for large grids (>= 128^3)
-            use_checkpoint = all(s >= 128 for s in grid_shape)
+            use_checkpoint = _decide_checkpointing(config, grid_shape, int(fixed_time_axis.Nt))
 
             for si in shot_indices:
                 src_pos = src_positions_grid[int(si)]
@@ -844,7 +869,7 @@ def _run_fwi_siren(
                 )
             shot_indices = np.array(shot_indices)
 
-            use_checkpoint = all(s >= 128 for s in grid_shape)
+            use_checkpoint = _decide_checkpointing(config, grid_shape, int(fixed_time_axis.Nt))
 
             total_loss = 0.0
             grads_accum = None
