@@ -148,6 +148,17 @@ def main():
         "--siren-lr", type=float, default=1e-3,
         help="Adam learning rate for SIREN-path FWI.",
     )
+    parser.add_argument(
+        "--precondition", action="store_true",
+        help="Pseudo-Hessian source-illumination preconditioning. Compensates "
+             "near-transducer gradient dominance so deep structures (the skull) "
+             "get updated rather than starved. Strongly recommended for skull "
+             "recovery (job 984 ran without it and recovered 0%% of the skull).",
+    )
+    parser.add_argument(
+        "--loss", choices=("l2", "envelope", "multiscale"), default="l2",
+        help="FWI data-misfit loss function. ('awi' is available on the AWI branch.)",
+    )
     args = parser.parse_args()
 
     N = args.grid_size
@@ -320,7 +331,8 @@ def main():
         c_max=c_max_fwi,
         pml_size=10,
         gradient_smooth_sigma=3.0,
-        loss_fn="l2",
+        loss_fn=args.loss,
+        precondition=args.precondition,
         skip_bandpass=True,
         mask=head_mask,
         checkpoint_dir=ckpt_dir,

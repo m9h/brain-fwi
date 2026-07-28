@@ -1,0 +1,11 @@
+{
+  "n_brain_voxels": 72782,
+  "fa_median_all": 0.232672318816185,
+  "fa_p90_all": 0.6200901865959167,
+  "wm_frac_FA>=0.25": 0.46491795161001914,
+  "wm_fa_median": 0.41665756702423096,
+  "wm_fa_p90": 0.7624071836471558,
+  "gm_fa_median": 0.14617523550987244,
+  "note": "ex-vivo fixation lowers FA vs in-vivo; orientation preserved",
+  "wm_global_orientation_coherence": 0.45402631163597107
+}

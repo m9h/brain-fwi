@@ -1,7 +1,7 @@
 """Head phantom loading and acoustic property mapping."""
 
 from .brainweb import load_brainweb_phantom, load_brainweb_slice, make_synthetic_head
-from .synthetic import make_three_layer_head
+from .synthetic import make_three_layer_head, make_gm_wm_contrast_head
 from .itrusst import (
     make_bm1_water_box,
     make_bm2_single_layer_plate,

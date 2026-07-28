@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 import numpy as np
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
@@ -36,6 +37,7 @@ from ..simulation.forward import (
     simulate_shot_sensors,
     _build_source_signal,
 )
+from ..constitutive import alpha_from_speed, manifold_proximal
 from .losses import l2_loss, envelope_loss, multiscale_loss
 from .param_field import (
     ParameterField,
@@ -96,8 +98,73 @@ class FWIConfig:
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
     skip_bandpass: bool = False
+
+    # --- Absorption-aware FWI ---
+    # Known, FIXED power-law attenuation field (dB/cm/MHz^alpha_power), e.g.
+    # derived from a CT skull. Folded into the forward medium each iteration
+    # (Treeby-Cox absorbing EoS) so the inversion matches the attenuated
+    # waveforms instead of (wrongly) explaining the missing amplitude with
+    # velocity structure. None = lossless (default, unchanged behaviour). Only
+    # velocity is inverted; alpha is held fixed.
+    attenuation: Optional[jnp.ndarray] = None
+    alpha_power: float = 1.5
+
+    # --- Phase 6: multiparameter (velocity + attenuation) inversion ---
+    # When True, alpha is a CO-INVERTED voxel field (not frozen). The GM/WM
+    # contrast channel is attenuation, not sound speed (Kang 2022: WM alpha ~1.5x
+    # GM, while GM/WM speed difference is at the noise floor) — velocity-only FWI
+    # cannot resolve it. State becomes a ``{"c", "a"}`` pytree; when False the
+    # state stays a bare velocity array and behaviour is byte-identical.
+    invert_attenuation: bool = False
+    attenuation_lr: float = 0.5  # Max alpha update/iter (dB/cm/MHz^alpha_power)
+    # Starting alpha field. None -> ``attenuation`` if given (array), else zeros.
+    attenuation_init: Optional[jnp.ndarray] = None
+    attenuation_max: float = 20.0  # alpha clipped to [0, this]; 0 = energy dissipation
+    attenuation_mask: Optional[jnp.ndarray] = None  # where alpha is updated
+
+    # Phase 6.2: CANN-derived tissue-α manifold prior (issue #45). Projects the
+    # inverted α toward the nearest physical tissue archetype after each step —
+    # "a few coefficients + a spatial field" instead of a smeared image. Ramped
+    # in LATE (after the data has grown α past the archetype midpoint) because a
+    # sub-midpoint value snaps toward water. None = no prior (free-voxel α).
+    attenuation_archetypes: Optional[jnp.ndarray] = None
+    attenuation_prior_weight: float = 0.0    # proximal pull strength beta in [0,1]
+    attenuation_prior_ramp: float = 0.5      # fraction of a band's iters before prior engages
+
+    # Constitutive velocity→attenuation coupling (issue #45). The well-resolved
+    # sound speed predicts α through the same-tissue (c, α) relation (KK/causal
+    # premise), letting the strong channel inform the weak one. Provide the
+    # (c_anchors, alpha_anchors) from ``constitutive.speed_alpha_anchors``.
+    # Degenerate for GM/WM (equal c) — helps c-contrasted tissues only.
+    attenuation_speed_anchors: Optional[tuple] = None
+    attenuation_speed_weight: float = 0.0    # pull toward c-predicted α in [0,1]
+
+    # Hierarchical c-first schedule (issue #45 recipe). α is FROZEN at its init
+    # until the global iteration reaches this fraction of the total, then
+    # released. This avoids the c-α crosstalk where a free-from-iter-0 α absorbs
+    # the amplitude misfit and starves velocity recovery — recover c first, then
+    # release α (with the constitutive coupling) into a well-resolved c. 0.0 =
+    # co-invert from the start (unchanged default); ~0.5 = c-only first half.
+    attenuation_release_frac: float = 0.0
+
     checkpoint_dir: Optional[str] = None  # Save/resume state after each band
+    # Segmented GRADIENT checkpointing (distinct from checkpoint_dir disk resume).
+    # None = auto: enabled when the stored backward tape would exceed
+    # ``checkpoint_tape_gb``. Backward memory ~ nt * ndim * prod(grid) * 4 bytes,
+    # so it is driven by nt AS WELL AS grid size — a 112^3 grid with 1155 steps
+    # needs ~19 GB and OOMs, which a grid-size-only rule (>=128^3) misses.
+    # True/False force it on/off.
+    use_gradient_checkpointing: Optional[bool] = None
+    checkpoint_tape_gb: float = 8.0
     precondition: bool = False  # Pseudo-Hessian source illumination compensation
+    # Illumination "water level" for preconditioning, as a fraction of peak
+    # illumination. The gradient is divided by ``illum + precondition_floor *
+    # max(illum)``. A near-zero floor (the old 1e-12) fully normalises every
+    # voxel, which AMPLIFIES noise in the poorly-lit deep brain into speckle;
+    # too large a floor under-corrects the bright near-skull periphery, leaving
+    # a ring. ~0.05 (5 %) tempers both — normalise the periphery, damp (not
+    # amplify) the interior. Default preserves the old full-normalisation.
+    precondition_floor: float = 1e-12
     verbose: bool = True
 
     # --- Parameterisation ---
@@ -147,6 +214,13 @@ class FWIResult:
     loss_history: List[float]
     params: jnp.ndarray
     field: Optional[ParameterField] = None
+    # Phase 6: recovered attenuation field (dB/cm/MHz^alpha_power) when
+    # ``invert_attenuation=True``; None for the velocity-only path.
+    attenuation: Optional[jnp.ndarray] = None
+    # Per-band attenuation snapshots (one per frequency band) — the alpha(omega)
+    # samples the CANN discovery (`discover_tissue_alpha_law`) consumes. Empty on
+    # the velocity-only path.
+    attenuation_history: List[jnp.ndarray] = dataclasses.field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +452,59 @@ def _bandpass_signal(signal: jnp.ndarray, dt: float, fmin: float, fmax: float) -
     return jnp.real(jnp.fft.ifft(S * bandpass))
 
 
+def _finalize_gradient(grad, grad_sq_accum, n_shots, mask, config):
+    """Precondition → smooth → mask → max-normalise a single-field gradient.
+
+    Shared by the velocity-only and multiparameter (Phase 6) paths so every
+    inverted field (c and, when enabled, α) gets identical treatment. After
+    max-normalisation the field's max update per iteration is controlled solely
+    by its optimiser step size.
+    """
+    if config.precondition:
+        illum = jnp.sqrt(grad_sq_accum / n_shots)
+        grad = grad / (illum + config.precondition_floor * jnp.max(illum))
+    if config.gradient_smooth_sigma > 0:
+        grad = _smooth_gradient(grad, config.gradient_smooth_sigma)
+    if mask is not None:
+        grad = grad * mask
+    return grad / (jnp.max(jnp.abs(grad)) + 1e-30)
+
+
+def _velocity_of(params):
+    """Extract the velocity array from the (possibly multiparameter) state."""
+    return params["c"] if isinstance(params, dict) else params
+
+
+def _alpha_released(band_idx: int, it: int, config: "FWIConfig") -> bool:
+    """Hierarchical c-first schedule: has attenuation inversion engaged yet?
+
+    α is frozen until the global iteration (across bands) reaches
+    ``attenuation_release_frac`` of the total. Default frac 0.0 → released from
+    the first iteration (co-inversion, unchanged behaviour).
+    """
+    total = max(1, config.n_iters_per_band * len(config.freq_bands))
+    global_iter = band_idx * config.n_iters_per_band + it
+    return bool(global_iter >= config.attenuation_release_frac * total)
+
+
+
+def _decide_checkpointing(config, grid_shape, n_time_steps) -> bool:
+    """Whether to use segmented gradient checkpointing for the forward solve.
+
+    The reverse-mode tape stores the full time history of the velocity field:
+    ``nt * ndim * prod(grid) * 4`` bytes. That is driven by the number of TIME
+    STEPS as much as by grid size, so the old grid-only rule (all dims >= 128)
+    silently missed cases like 112^3 x 1155 steps (~19 GB -> OOM) while firing
+    on smaller-tape 128^3 runs. ``config.use_gradient_checkpointing`` forces the
+    decision when not None.
+    """
+    if config.use_gradient_checkpointing is not None:
+        return bool(config.use_gradient_checkpointing)
+    ndim = len(grid_shape)
+    tape_gb = n_time_steps * ndim * float(np.prod(grid_shape)) * 4.0 / 1e9
+    return tape_gb > config.checkpoint_tape_gb
+
+
 def run_fwi(
     observed_data: jnp.ndarray,
     initial_velocity: jnp.ndarray,
@@ -450,6 +577,18 @@ def run_fwi(
     # takes ~1 m/s steps (modulated by its moment estimates).
     params = initial_velocity.copy()
 
+    # Phase 6: co-invert attenuation. State becomes a {"c", "a"} pytree; the
+    # velocity-only path below is byte-identical (params stays a bare array).
+    if config.invert_attenuation:
+        if config.attenuation_init is not None:
+            a0 = jnp.asarray(config.attenuation_init, dtype=params.dtype)
+        elif config.attenuation is not None and not isinstance(
+                config.attenuation, (int, float)):
+            a0 = jnp.asarray(config.attenuation, dtype=params.dtype)
+        else:
+            a0 = jnp.zeros_like(params)
+        params = {"c": params, "a": a0}
+
     # Steepest descent with gradient normalisation (Stride-style).
     # Combined with max_step_m_per_s, the learning rate directly controls
     # the maximum velocity change per iteration in m/s.
@@ -458,10 +597,12 @@ def run_fwi(
 
     loss_history = []
     velocity_history = []
+    attenuation_history = []
     start_band = 0
 
-    # Resume from checkpoint if available
-    if config.checkpoint_dir:
+    # Resume from checkpoint if available. Multiparameter (Phase 6) state is not
+    # yet checkpointed (velocity-only save/resume) — tracked in issue #44.
+    if config.checkpoint_dir and not config.invert_attenuation:
         ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
         ckpt = _load_checkpoint(ckpt_path, expected_grid_shape=grid_shape)
         if ckpt is not None:
@@ -524,19 +665,25 @@ def run_fwi(
             # uses O(1 shot) memory instead of O(n_shots)).
             # Also accumulate squared gradients for pseudo-Hessian preconditioning.
             total_loss = 0.0
-            grad_accum = jnp.zeros_like(params)
-            grad_sq_accum = jnp.zeros_like(params)
+            grad_accum = jax.tree_util.tree_map(jnp.zeros_like, params)
+            grad_sq_accum = jax.tree_util.tree_map(jnp.zeros_like, params)
 
-            # Use checkpointed scan for large grids (>= 128^3)
-            use_checkpoint = all(s >= 128 for s in grid_shape)
+            use_checkpoint = _decide_checkpointing(config, grid_shape, int(fixed_time_axis.Nt))
 
             for si in shot_indices:
                 src_pos = src_positions_grid[int(si)]
                 obs = bp_observed[int(si)]
 
-                def single_shot_loss(velocity, _src_pos=src_pos, _obs=obs):
+                def single_shot_loss(p, _src_pos=src_pos, _obs=obs):
+                    if config.invert_attenuation:
+                        velocity, atten = p["c"], p["a"]
+                    else:
+                        velocity, atten = p, config.attenuation
                     domain = build_domain(grid_shape, dx)
-                    medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
+                    medium = build_medium(
+                        domain, velocity, density, pml_size=config.pml_size,
+                        attenuation=atten, alpha_power=config.alpha_power,
+                    )
                     pred = simulate_shot_sensors(
                         medium, fixed_time_axis, _src_pos, sensor_positions_grid,
                         bp_signal, dt, checkpointed=use_checkpoint,
@@ -546,50 +693,82 @@ def run_fwi(
 
                 shot_loss, shot_grad = jax.value_and_grad(single_shot_loss)(params)
                 total_loss = total_loss + float(shot_loss)
-                grad_accum = grad_accum + shot_grad
-                grad_sq_accum = grad_sq_accum + shot_grad ** 2
+                grad_accum = jax.tree_util.tree_map(
+                    lambda a, g: a + g, grad_accum, shot_grad)
+                grad_sq_accum = jax.tree_util.tree_map(
+                    lambda a, g: a + g ** 2, grad_sq_accum, shot_grad)
 
             n_shots = len(shot_indices)
             loss_val = total_loss / n_shots
-            grad = grad_accum / n_shots
+            grad = jax.tree_util.tree_map(lambda g: g / n_shots, grad_accum)
             loss_history.append(loss_val)
 
-            # Source illumination preconditioning (pseudo-Hessian).
-            # Compensates for the fact that near-transducer voxels have
-            # enormous gradient amplitude while interior brain voxels
-            # get tiny gradients. Standard in geophysical FWI (Shin 2001).
-            if config.precondition:
-                illum = jnp.sqrt(grad_sq_accum / n_shots)
-                grad = grad / (illum + 1e-12 * jnp.max(illum))
-
-            # Process gradient
-            if config.gradient_smooth_sigma > 0:
-                grad = _smooth_gradient(grad, config.gradient_smooth_sigma)
-
-            if config.mask is not None:
-                grad = grad * config.mask
-
-            # Normalise gradient by max magnitude so that the optimizer
-            # learning rate directly controls max velocity change in m/s.
-            # With SGD(lr=50): max update = 50 m/s per iteration.
-            grad_max = jnp.max(jnp.abs(grad))
-            grad = grad / (grad_max + 1e-30)
+            # Precondition → smooth → mask → max-normalise. For the velocity-only
+            # path this is a single field; for Phase 6 each leaf (c, α) is
+            # finalised independently with its own mask, and α is scaled to its
+            # own step size (attenuation_lr) since the shared SGD carries lr=c-step.
+            alpha_released = config.invert_attenuation and _alpha_released(
+                band_idx, it, config)
+            if config.invert_attenuation:
+                gc = _finalize_gradient(
+                    grad["c"], grad_sq_accum["c"], n_shots, config.mask, config)
+                if alpha_released:
+                    ga = _finalize_gradient(
+                        grad["a"], grad_sq_accum["a"], n_shots,
+                        config.attenuation_mask, config)
+                    ga = ga * (config.attenuation_lr / config.learning_rate)
+                else:
+                    ga = jnp.zeros_like(grad["a"])   # c-first: α frozen
+                grad = {"c": gc, "a": ga}
+            else:
+                grad = _finalize_gradient(
+                    grad, grad_sq_accum, n_shots, config.mask, config)
 
             # Optimizer update + clip to physical bounds
             updates, opt_state = optimizer.update(grad, opt_state, params)
             params = optax.apply_updates(params, updates)
-            params = jnp.clip(params, config.c_min, config.c_max)
+            if config.invert_attenuation:
+                c_new = jnp.clip(params["c"], config.c_min, config.c_max)
+                a_new = jnp.clip(params["a"], 0.0, config.attenuation_max)
+                # Regularisers engage only once α is released and past the
+                # per-band ramp (while frozen, α is held exactly at its init).
+                past_ramp = alpha_released and (
+                    it >= config.attenuation_prior_ramp * config.n_iters_per_band)
+                # Tissue-α manifold prior (issue #45): ramp in late so the data
+                # has grown α past the archetype midpoint before we project.
+                if (config.attenuation_archetypes is not None
+                        and config.attenuation_prior_weight > 0.0 and past_ramp):
+                    a_new = manifold_proximal(
+                        a_new, config.attenuation_archetypes,
+                        beta=config.attenuation_prior_weight)
+                # Constitutive c→α coupling (issue #45): the well-resolved
+                # velocity predicts α (same-tissue relation), pulling weak α
+                # toward the strong channel's implication. Ramped like the prior.
+                if (config.attenuation_speed_anchors is not None
+                        and config.attenuation_speed_weight > 0.0 and past_ramp):
+                    c_anch, a_anch = config.attenuation_speed_anchors
+                    pred = alpha_from_speed(c_new, c_anch, a_anch)
+                    a_new = a_new + config.attenuation_speed_weight * (pred - a_new)
+                    a_new = jnp.clip(a_new, 0.0, config.attenuation_max)
+                params = {"c": c_new, "a": a_new}
+            else:
+                params = jnp.clip(params, config.c_min, config.c_max)
 
             if config.verbose and (it + 1) % 5 == 0:
+                _c = _velocity_of(params)
                 print(f"    Iter {it+1}/{config.n_iters_per_band}: "
                       f"loss={loss_val:.6f}, "
-                      f"c=[{float(jnp.min(params)):.0f}, {float(jnp.max(params)):.0f}] m/s")
+                      f"c=[{float(jnp.min(_c)):.0f}, {float(jnp.max(_c)):.0f}] m/s")
 
-        # Save velocity snapshot at end of band
-        velocity_history.append(params)
+        # Save velocity (and, for Phase 6, attenuation) snapshot at end of band.
+        # The per-band α snapshots are the α(ω) samples the CANN discovery
+        # (discover_tissue_alpha_law) consumes.
+        velocity_history.append(_velocity_of(params))
+        if config.invert_attenuation:
+            attenuation_history.append(params["a"])
 
-        # Checkpoint to disk for resume after preemption
-        if config.checkpoint_dir:
+        # Checkpoint to disk for resume after preemption (velocity-only path)
+        if config.checkpoint_dir and not config.invert_attenuation:
             ckpt_path = Path(config.checkpoint_dir) / "fwi_checkpoint.h5"
             _save_checkpoint(ckpt_path, band_idx, params,
                            loss_history, velocity_history,
@@ -597,12 +776,15 @@ def run_fwi(
             if config.verbose:
                 print(f"  Checkpoint saved: band {band_idx+1} complete")
 
+    final_velocity = _velocity_of(params)
     return FWIResult(
-        velocity=params,
+        velocity=final_velocity,
         velocity_history=velocity_history,
         loss_history=loss_history,
-        params=params,
-        field=VoxelField(params=params),
+        params=final_velocity,
+        field=VoxelField(params=final_velocity),
+        attenuation=params["a"] if isinstance(params, dict) else None,
+        attenuation_history=attenuation_history,
     )
 
 
@@ -687,7 +869,7 @@ def _run_fwi_siren(
                 )
             shot_indices = np.array(shot_indices)
 
-            use_checkpoint = all(s >= 128 for s in grid_shape)
+            use_checkpoint = _decide_checkpointing(config, grid_shape, int(fixed_time_axis.Nt))
 
             total_loss = 0.0
             grads_accum = None
@@ -699,7 +881,10 @@ def _run_fwi_siren(
                 def single_shot_loss(f, _src_pos=src_pos, _obs=obs):
                     velocity = f.to_velocity(config.c_min, config.c_max)
                     domain = build_domain(grid_shape, dx)
-                    medium = build_medium(domain, velocity, density, pml_size=config.pml_size)
+                    medium = build_medium(
+                        domain, velocity, density, pml_size=config.pml_size,
+                        attenuation=config.attenuation, alpha_power=config.alpha_power,
+                    )
                     pred = simulate_shot_sensors(
                         medium, fixed_time_axis, _src_pos, sensor_positions_grid,
                         bp_signal, dt, checkpointed=use_checkpoint,

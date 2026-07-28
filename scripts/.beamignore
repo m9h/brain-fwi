@@ -1,0 +1,6 @@
+*
+!beam_benchmark_forward.py
+!beam_dps_fwi_3d.py
+!beam_dps_posterior_3d.py
+!beam_kwave_smoke.py
+!beam_kwave_gen.py
