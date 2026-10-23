@@ -352,3 +352,97 @@ noiseless, inverse crime as elsewhere.
 block on ~13 GB resident); fits the 32 GB RTX5090. Stage 3 (~55 GB peak) needs an 80 GB card:
 beam's are on-demand-only (+$25 managed-compute credits); Modal A100-80GB serverless worked
 first time, 75 min. Serverless economics: a stage-3 run is ~$3 — the ladder is cheap to re-run.
+
+### Spatial fidelity: WHY the ribbon AUC saturates (`scripts/gmwm_spatial_fidelity.py`)
+
+Risk-register item 7 ("AUC is not image quality") made operational: the saved `c_rec_*.npy`
+are scored offline against the deterministic truth phantom — brain-masked 3-D SSIM, WM
+speckle (std of c in flat WM, truth 0), ribbon radial profile, 10-90% edge rise width.
+
+| tag | N | SSIM | **WM speckle σ (m/s)** | ribbon ring amplitude | rise width | ribbon AUC |
+|---|---|---|---|---|---|---|
+| s1B | 112 | 0.245 | **5.0** | 27% | 4.0 mm | 0.848 |
+| s2B | 144 | 0.251 | **4.2** | 30% | 3.1 mm | 0.798 |
+| s2B 2×budget | 144 | 0.213 | **5.3** | 42% | 3.1 mm | 0.806 |
+| s3B | 176 | 0.257 | **4.1** | 33% | 4.1 mm | 0.858 |
+
+**The ribbon AUC is speckle-limited, quantitatively.** Model the ribbon and WM voxel
+populations as two Gaussians separated by the recovered median contrast with σ = the
+measured WM speckle; then AUC = Φ(d′/√2):
+
+| tag | ribbon rec. | d′ | **AUC predicted** | **AUC observed** | nuclei rec. | d′ | pred | obs |
+|---|---|---|---|---|---|---|---|---|
+| s1B | +8.0 | 1.60 | 0.870 | 0.848 | +16.3 | 3.25 | 0.989 | 0.998 |
+| s2B | +5.4 | 1.28 | 0.817 | 0.798 | +15.5 | 3.68 | 0.995 | 0.998 |
+| s2B 2×budget | +7.7 | 1.47 | 0.851 | 0.806 | +16.1 | 3.06 | 0.985 | 0.992 |
+| s3B | +6.4 | 1.58 | 0.868 | 0.858 | +13.9 | 3.41 | 0.992 | 0.994 |
+
+Every observed AUC lands within 0.02-0.05 of the prediction. So:
+
+1. **The nuclei resolve because 15 m/s ≫ 4.5 m/s speckle (d′ ≈ 3.4), the ribbon does not
+   because its recovered ring is only 5-8 m/s (d′ ≈ 1.5).** Same image quality, different
+   contrast-to-speckle. The ribbon's recovered amplitude is half the truth (ring peaks at
+   ~1560 vs 1568.5) with its inner edge smeared 2-3 mm inward — the profile plot
+   `spatial_fidelity_ribbon_profiles.png` shows all four stages nearly superimposed.
+2. **Speckle σ is a floor (4-5 m/s) that neither grid refinement nor 4× gradient budget
+   lowers** (more budget *raised* it: 4.2 → 5.3). It is not shot-sampling noise and not
+   resolution; the data are noiseless and inverse-crime, so it is **gradient noise the
+   optimiser is free to deposit** at the resolution scale. NB the runner's
+   `gradient_smooth_sigma = 1.0` grid point is already ~λ/3 at the ladder's constant ppw 3.1 —
+   the speckle lives AT the λ/2 resolution scale, so it cannot be smoothed away without
+   erasing the resolution it rides on. Speckle reduction has to come from more independent
+   data (coverage: 7.6 → 4.4 m/s for 8 → 128 elements) or from a prior — exactly where the
+   project's diffusion-prior / DPS machinery (+31-60% on real cerebrum) should earn its keep.
+3. **SSIM ≈ 0.25 at every stage** — by image-fidelity standards these are poor images even
+   where AUC says "resolved". Any diagnostic-imaging claim needs this number to move.
+
+**Two levers, in order.** (a) ppw: speckle may be partly dispersion/discretisation noise at
+ppw 3.1; the `--N` tests (300 kHz @ N=176, ppw 4.9) running now show whether σ drops with ppw
+alone. (b) A prior: TV (PR #42) or diffusion-prior / DPS guidance, re-measuring σ, ring
+amplitude and SSIM. Halving σ to ~2.2 m/s at the current ring amplitude would put ribbon
+d′ ≈ 3 → AUC ≈ 0.98. (`--smooth` exists for a sanity sweep, but it trades resolution for
+speckle one-for-one at constant ppw.)
+
+### The ribbon, resolved: it is a sub-skull edge artefact, not a resolution limit
+
+Split the ribbon into its inner half (52-53.5 mm) and outer half (53.5-55 mm, i.e. the
+1.5 mm directly under the 1 mm CSF gap and the frozen skull at 56-62 mm), each scored
+against WM:
+
+| run | res | **inner ribbon AUC / %** | **outer ribbon AUC / %** | whole (runner metric) |
+|---|---|---|---|---|
+| s1A no skull | 2.60 mm | 0.895 / +81% | 0.974 / +134% | 0.955 / +110% |
+| s1B transcranial | 2.60 mm | **0.887 / +55%** | **0.375 / −21%** | 0.848 / +47% |
+| s2B | 1.95 mm | 0.823 / +34% | 0.462 / −4% | 0.798 / +32% |
+| s2B 2×budget | 1.95 mm | 0.857 / +53% | 0.402 / −20% | 0.806 / +45% |
+| s3B | 1.56 mm | 0.834 / +34% | **0.667 / +21%** | 0.858 / +38% |
+
+**1. The skull is transparent for the inner cortex.** Inner-ribbon AUC transcranially
+(0.887) equals the no-skull value (0.895). That half is speckle-limited exactly like the
+nuclei (d′ ≈ 1.5-2 at 4-5 m/s speckle), not skull-limited.
+
+**2. The outer 1.5 mm under the skull is SIGN-INVERTED at stages 1-2** — reported *slower*
+than WM (−21%, AUC 0.38) — and this layer alone drags the whole-ribbon number from ~0.9 to
+~0.8. The no-skull run has no such layer (0.974). The CSF gap is already frozen at truth in
+the runner (it is outside the brain mask), so this is not the gap being mis-estimated: it is
+the **frozen-interface edge artefact** of masked FWI — residual belonging to the fixed
+CSF/skull boundary (a −60 / +1300 m/s step) is deposited into the nearest *free* voxels,
+the outer ribbon, and at `gradient_smooth_sigma = 1` grid point nothing damps it.
+
+**3. Frequency DOES help — for this layer, and only this layer.** Outer-ribbon AUC climbs
+0.375 → 0.462 → 0.667 up the ladder as the resolution kernel confines the interface
+artefact to a thinner skirt. The ladder was working all along; the whole-ribbon metric
+(inner speckle-limited + outer inverted) could not show it. Same mechanism as the Run 3
+"moderately wrong skull reports the wrong sign" finding: skull-adjacent tissue is where
+structured artefacts masquerade as tissue contrast — now shown to happen even with a
+PERFECT skull.
+
+**What this changes.** (a) Report inner/outer ribbon separately from now on
+(`gmwm_spatial_fidelity.py` does). (b) The sub-skull layer is a *clinical* concern —
+real cortex sits exactly there — and has concrete remedies to test, cheapest first:
+a 1-voxel inversion skirt excluded next to the frozen interface (or a tapered mask),
+physically-scaled gradient smoothing (`--smooth`, ~λ/4), and finer resolution / higher
+ppw (in flight). Stage-1 runs on an RTX5090 take ~8 min (~$0.15), so this is a
+same-afternoon sweep. (c) The speckle floor (4-5 m/s, lowered only slowly by coverage:
+7.6 → 4.4 m/s for 8 → 128 elements, raised by noise to 8.5 at 10 dB) is the remaining
+limiter for *everything* small; it is a regularisation problem, not a frequency one.

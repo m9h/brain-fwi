@@ -24,7 +24,8 @@ app = modal.App("brain-fwi-gmwm-ladder")
 
 GIT_BRANCH = os.environ.get("BFWI_MODAL_BRANCH", "feature/diffusion-prior-fwi")
 GPU = os.environ.get("BFWI_MODAL_GPU", "A100-80GB")
-CACHE_BUST = "2026-10-22-gmwm-ladder-v1"
+# bump (or set BFWI_MODAL_CACHE_BUST) after every push: Modal reuses the image, i.e. the OLD clone
+CACHE_BUST = os.environ.get("BFWI_MODAL_CACHE_BUST", "2026-10-23-gmwm-ladder-v2-N-override")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -41,7 +42,8 @@ vol = modal.Volume.from_name("brain-fwi-results", create_if_missing=True)
 
 @app.function(image=image, gpu=GPU, timeout=6 * 60 * 60, memory=32 * 1024, volumes={"/vol": vol})
 def run(stage: int, phase: str, iters: int, shots_per_iter: int, n_src: int, n_rec: int,
-        noise_db: float | None, tag: str, n_grid: int | None = None):
+        noise_db: float | None, tag: str, n_grid: int | None = None, smooth: float = 1.0,
+        invert_all: bool = False):
     import glob, os, shutil, subprocess, sys, time
     os.environ.update({"JAX_PLATFORMS": "cuda", "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
                        "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9", "TF_GPU_ALLOCATOR": "cuda_malloc_async",
@@ -49,7 +51,9 @@ def run(stage: int, phase: str, iters: int, shots_per_iter: int, n_src: int, n_r
     os.chdir("/opt/brain-fwi")
     cmd = ["python", "-u", "scripts/gmwm_velocity_3d.py", "--stage", str(stage), "--phase", phase,
            "--iters", str(iters), "--shots-per-iter", str(shots_per_iter),
-           "--n-src", str(n_src), "--n-rec", str(n_rec)]
+           "--n-src", str(n_src), "--n-rec", str(n_rec), "--smooth", str(smooth)]
+    if invert_all:
+        cmd += ["--invert-all"]
     if n_grid:
         cmd += ["--N", str(n_grid)]            # ppw test: stage bands on a finer grid
     if noise_db is not None:
@@ -75,11 +79,13 @@ def run(stage: int, phase: str, iters: int, shots_per_iter: int, n_src: int, n_r
 
 @app.local_entrypoint()
 def main(stage: int = 3, phase: str = "B", iters: int = 20, shots_per_iter: int = 4,
-         n_src: int = 16, n_rec: int = 128, noise_db: float = None, tag: str = "", n: int = None):
+         n_src: int = 16, n_rec: int = 128, noise_db: float = None, tag: str = "", n: int = None,
+         smooth: float = 1.0, invert_all: bool = False):
     OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results", "gmwm_velocity_3d")
     os.makedirs(OUT, exist_ok=True)
-    print(f"=== Modal GM/WM ladder: stage {stage} phase {phase} N={n or 'stage default'} on {GPU} ({GIT_BRANCH}) ===", flush=True)
-    res = run.remote(stage, phase, iters, shots_per_iter, n_src, n_rec, noise_db, tag, n)
+    print(f"=== Modal GM/WM ladder: stage {stage} phase {phase} N={n or 'stage default'} smooth={smooth} "
+          f"invert_all={invert_all} on {GPU} ({GIT_BRANCH}) ===", flush=True)
+    res = run.remote(stage, phase, iters, shots_per_iter, n_src, n_rec, noise_db, tag, n, smooth, invert_all)
     for name, data in res["files"].items():
         with open(os.path.join(OUT, name), "wb") as fh:
             fh.write(data)

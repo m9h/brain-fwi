@@ -47,6 +47,14 @@ ap.add_argument("--tag", type=str, default="")
 ap.add_argument("--N", type=int, default=None,
                 help="grid override: decouple ppw from the stage's bands (ladder holds ppw~3.1 "
                      "fixed; the 2-D ribbon result used ppw 6.2). e.g. --stage 1 --N 176 = ppw 4.9")
+ap.add_argument("--invert-all", action="store_true",
+                help="free the CSF gap + skull in the inversion (start at truth) instead of freezing "
+                     "them: tests whether the sign-inverted outer ribbon is the frozen-interface "
+                     "edge artefact (spatial_fidelity inner/outer split)")
+ap.add_argument("--smooth", type=float, default=1.0,
+                help="gradient_smooth_sigma in grid points (default 1.0 = ~unregularised at the "
+                     "speckle scale; ribbon AUC is speckle-limited, see spatial_fidelity). "
+                     "~lambda/4 in grid points is the physically motivated value")
 args = ap.parse_args()
 S = STAGES[args.stage]
 N, BANDS, FREQ = (args.N or S["N"]), S["bands"], S["freq"]
@@ -140,7 +148,8 @@ print(f"  starting relative residual {rel0*100:.2f}%  "
 cfg = FWIConfig(freq_bands=BANDS, n_iters_per_band=args.iters,
                 shots_per_iter=args.shots_per_iter, learning_rate=4.0,
                 c_min=1480.0, c_max=CFG_CMAX, pml_size=PML, cfl=0.3,
-                gradient_smooth_sigma=1.0, mask=jnp.asarray(brain.astype(np.float32)),
+                gradient_smooth_sigma=args.smooth,
+                mask=jnp.asarray(((r <= R_BRAIN + 7*mm) if args.invert_all else brain).astype(np.float32)),
                 precondition=True, verbose=True)
 print(f"running 3-D FWI ({len(BANDS)} bands x {args.iters} it x {args.shots_per_iter} sh) ...", flush=True)
 res = run_fwi(obs, jnp.asarray(c_init), jnp.asarray(rho), dx, src_list, recv, sig, dt,

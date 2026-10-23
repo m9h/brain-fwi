@@ -29,10 +29,14 @@ GPU = os.environ.get("BFWI_BEAM_GPU", "RTX5090")           # serverless: RTX5090
 # creates pool "ondemand-A100-80"; then BFWI_BEAM_GPU=A100-80 BFWI_BEAM_POOL=ondemand-A100-80
 POOL = os.environ.get("BFWI_BEAM_POOL") or None
 _pool_kw = {"pool": POOL} if POOL else {}
+# beam caches the image by its command list -> the `git clone` below is NOT re-run after a push
+# unless something changes. Bump this (or set BFWI_BEAM_CACHE_BUST) after every push.
+CACHE_BUST = os.environ.get("BFWI_BEAM_CACHE_BUST", "2026-10-23-v3-N-smooth-invertall")
 image = (
     Image(python_version="python3.11")
     .add_commands([
         "apt-get update && apt-get install -y git build-essential",
+        f"echo cache-bust {CACHE_BUST}",
         f"git clone --depth 1 --branch {GIT_BRANCH} https://github.com/m9h/brain-fwi.git /opt/brain-fwi",
         "cd /opt/brain-fwi && pip install -e '.[cuda12]'",
     ])
@@ -46,12 +50,15 @@ image = (
 
 # defaults are cpu=0.125 / 128 MiB (jax import alone OOMs, exit 137) and timeout=3600; -1 = no cap
 @function(gpu=GPU, image=image, cpu=4, memory="16Gi", timeout=-1, volumes=[VOL], **_pool_kw)
-def run(stage, phase, iters, shots_per_iter, n_src, n_rec, noise_db, tag, n_grid=None):
+def run(stage, phase, iters, shots_per_iter, n_src, n_rec, noise_db, tag, n_grid=None, smooth=1.0,
+        invert_all=False):
     import subprocess, sys, json, glob, os, shutil
     os.chdir("/opt/brain-fwi")
     cmd = [sys.executable, "-u", "scripts/gmwm_velocity_3d.py", "--stage", str(stage), "--phase", phase,
            "--iters", str(iters), "--shots-per-iter", str(shots_per_iter),
-           "--n-src", str(n_src), "--n-rec", str(n_rec)]
+           "--n-src", str(n_src), "--n-rec", str(n_rec), "--smooth", str(smooth)]
+    if invert_all:
+        cmd += ["--invert-all"]
     if n_grid:
         cmd += ["--N", str(n_grid)]            # ppw test: stage bands on a finer grid
     if noise_db is not None:
@@ -85,6 +92,8 @@ if __name__ == "__main__":
     ap.add_argument("--noise-db", type=float, default=None)
     ap.add_argument("--tag", type=str, default="")
     ap.add_argument("--N", type=int, default=None, help="grid override (ppw test); see gmwm_velocity_3d.py")
+    ap.add_argument("--smooth", type=float, default=1.0, help="gradient_smooth_sigma, grid points (speckle test)")
+    ap.add_argument("--invert-all", action="store_true", help="free skull+CSF gap in the inversion (edge-artefact test)")
     a = ap.parse_args()
     OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results", "gmwm_velocity_3d")
     os.makedirs(OUT, exist_ok=True)
@@ -93,7 +102,8 @@ if __name__ == "__main__":
     # StatusCode.INTERNAL", client exits) while the REMOTE task keeps running — re-invoking
     # would launch a duplicate. Recovery = `beam task list` to watch it, then
     # `beam_fetch_results.py --tag <TAG>` to pull the files from the Volume.
-    res = run.remote(a.stage, a.phase, a.iters, a.shots_per_iter, a.n_src, a.n_rec, a.noise_db, a.tag, a.N)
+    res = run.remote(a.stage, a.phase, a.iters, a.shots_per_iter, a.n_src, a.n_rec, a.noise_db, a.tag, a.N, a.smooth,
+                     a.invert_all)
     if not res:
         raise SystemExit("no result returned (stream lost?) — task may still be running: "
                          "`beam task list`, then `beam_fetch_results.py --tag <TAG>`")
