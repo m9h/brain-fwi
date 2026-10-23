@@ -520,3 +520,56 @@ recovered skull (0.07 vox) and a co-inverted diploe (0.3%) the start is near-tru
 expectation is that it composes; but a free skull that starts wrong may drift, and that
 is the compound pose+property+free-interface test the campaign has not run. Bounded,
 low-learning-rate inversion of the skull band is the conservative form to build.
+
+### ppw test: more points per wavelength makes speckle WORSE (`--stage 1 --N 176`, ppw 4.9)
+
+| stage-1 bands (300 kHz), frozen interface, σ_grad = 1 grid pt | ppw | σ_grad in λ | speckle σ | ribbon AUC | inner | nuclei AUC |
+|---|---|---|---|---|---|---|
+| N=112 (s1B) | 3.2 | λ/3.2 | 5.01 | 0.848 | 0.887 | 0.998 |
+| N=144 (s1B_ppw40), Modal A100-80, 34 min | 4.0 | λ/4.0 | **6.16** | **0.662** | 0.677 | 0.994 |
+| N=176 (s1B_ppw49), Modal A100-80, 74 min | 4.9 | λ/4.9 | **7.01** | **0.673** | 0.637 | 0.963 |
+| stage-2 bands (400 kHz): N=144 (s2B) | 3.1 | λ/3.1 | 4.21 | 0.798 | 0.823 | 0.998 |
+| stage-2 bands: N=176 (s2B_ppw37), 75 min | 3.7 | λ/3.7 | **4.74** | **0.612** | 0.604 | 0.987 |
+
+Monotonic across ppw 3.2 → 4.0 → 4.9 (speckle 5.0 → 6.2 → 7.0). The ppw hypothesis is dead: at fixed frequency and budget, a finer grid gives the gradient
+*more* sub-wavelength degrees of freedom to deposit noise in, and a smoothing kernel fixed
+in grid points shrinks in physical terms (λ/3 → λ/5). Speckle is set by the
+**regularisation scale measured in wavelengths**, not by discretisation accuracy; ppw 3.1
+was never the problem. Together with the σ=2 result this fixes the rule: specify
+`gradient_smooth_sigma` physically, ≈ λ/2 at the top band (2 grid points at ppw 3-4), and
+scale it with ppw when the grid is refined.
+
+### The fixed configuration up the ladder (`--invert-all --smooth 2.0`, 20 it × 4 shots)
+
+| stage | res | ribbon AUC / % | inner | outer | nuclei AUC / % | speckle σ | SSIM | RMSE | wall |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2.60 mm | **0.974** / 50% | 0.954 | 0.969 | 1.000 / 112% | 3.30 | 0.454 | 5.23 | 8 min RTX5090 |
+| 2 | 1.95 mm | **0.945** / 35% | 0.922 | 0.957 | 1.000 / 91% | **2.75** | **0.459** | 5.28 | 31 min A100-80 |
+| 3 | 1.56 mm | **0.961** / 39% | 0.936 | 0.973 | 1.000 / 83% | 2.82 | 0.440 | 5.20 | 71 min A100-80 |
+
+vs. the frozen-interface, σ=1 ladder: ribbon 0.848 / 0.798 / 0.858 → **0.974 / 0.945 / 0.961**. The fixed config lifts
+the ribbon by ~0.1-0.15 AUC at every stage and halves the speckle. Speckle keeps falling
+with N under the fixed config (3.3 → 2.75) — the λ/2 kernel now has more voxels to average.
+The ring amplitude falls with N at fixed budget (50 → 35%), the under-iteration effect
+measured earlier; a budget ∝ N³ ladder is the clean follow-up.
+
+**Headline (stage 3, 500 kHz, 1.02 mm voxels, transcranial, skull at truth, noiseless):
+3 mm cortical ribbon AUC 0.961 (inner 0.936 / outer 0.973), deep-gray GM/WM AUC 1.000 /
+83%, ventricle AUC 1.000, WM speckle 2.8 m/s, SSIM 0.44.** Every stage of the ladder now
+resolves the ribbon; the whole campaign's open "resolution" question was two configuration
+changes. Total cloud cost of the stage 2-3 ladder, the ppw series and the remedy sweep:
+≈ $25 (beam RTX5090 + Modal A100-80GB), 2026-10-22/23.
+
+### Risk register, updated
+1. ~~Diploe speed error~~ — CLOSED (co-inversion, 0.3%)
+2. Skull pose error — cliff at 0.25 vox; MOFI clears it ~3.5×
+3. Bulk skull speed error — graceful to 5%
+4. Coverage — ≥32 elements; also the only data-side lever on speckle (7.6 → 4.4 m/s)
+5. Noise — tolerable to 10 dB
+6. Skull attenuation error — nearly irrelevant
+7. ~~AUC is not image quality~~ — **CLOSED**: `gmwm_spatial_fidelity.py`; SSIM 0.25 → 0.45
+8. **No real ultrasound data** — the remaining gate
+9. **NEW — frozen-interface edge artefact**: a hard-frozen skull sign-inverts the
+   sub-skull cortex and regularisation makes it *more* convincing. Fixed here with a free
+   interface started at truth; the UNKNOWN-skull version (MOFI pose + co-inverted diploe +
+   free/soft interface) is the untested compound case and the next run.
