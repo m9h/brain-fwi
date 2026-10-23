@@ -230,3 +230,125 @@ ordering is non-monotonic (0.436 / 0.557 / 0.514); all are at chance, so ranking
 failed regimes is not meaningful. (c) Pose error is *imposed*, using MOFI's measured
 accuracy rather than re-running the recovery live — a confirmatory end-to-end run
 with pose recovered in-loop is the natural follow-up.
+
+## RUN 4 + DIPLOE CO-INVERSION — the skull-property risk, found and closed
+
+**Run 4 (skull property error, real MIDA anatomy + trilayer skull).** The
+real-anatomy ablation had shown skull *complexity* costs nothing when the skull is
+KNOWN (trilayer 0.995 vs uniform 0.994), so the risk is skull *error*. Pose error
+was measured in Run 3; this measures PROPERTY error.
+
+| skull error | mean \|dc\| | resid | deep-GM AUC | contrast |
+|---|---|---|---|---|
+| none (control) | 0 | 2.6% | 0.990 | 72% |
+| +5% skull c | 135 m/s | 16.7% | 0.893 | 55% |
+| +10% skull c | 271 m/s | 30.2% | 0.789 | 43% |
+| **-20% diploe c** | **86 m/s** | 16.2% | **0.584** | **11%** |
+| 2x skull alpha | 0 | 3.9% | 0.959 | 65% |
+| 0.5x skull alpha | 0 | 3.5% | 0.987 | 70% |
+
+**Attenuation error is nearly harmless; speed error dominates.** A 2x error in bone
+attenuation costs almost nothing (0.990 -> 0.959) and barely moves the residual
+(2.6% -> 3.9%), because the waveform misfit is phase/arrival-dominated rather than
+amplitude-dominated. This is good news: bone alpha is poorly constrained in
+practice and it turns out not to matter much.
+
+**The diploe is the single most dangerous parameter in the campaign.** A -20%
+diploe-speed error collapses GM/WM to AUC 0.584 / 11% -- worse than a +10% error
+across the WHOLE skull, despite a SMALLER mean speed error (86 vs 271 m/s). Error
+concentrated in the interior layer changes the reverberation structure of the bone
+sandwich, which no global time-shift can absorb. It also biases the recovered WM
+median by +16.7 m/s -- i.e. **skull error masquerades as brain property error at
+the same magnitude as the GM/WM contrast being measured**, and inflates the CSF
+control to 132% (artefacts).
+
+This SHARPENS the earlier ablation conclusion rather than contradicting it:
+**the diploe costs nothing when known exactly, and is the most sensitive parameter
+when wrong.**
+
+**Co-inversion closes it** (`scripts/diploe_coinvert.py`). The sensitivity that
+makes the diploe dangerous also makes it identifiable: a -20% error produces a ~16%
+data residual while the unknown brain contributes only ~2.6%, so the diploe signal
+dominates ~6x and can be recovered BEFORE the brain -- the MOFI recipe applied to a
+property instead of a pose. A 13-point 1-D scan on an ENVELOPE misfit (cycle-skip
+robust) with the brain pinned at 1560, plus parabolic refinement:
+
+| arm | diploe | WM median | deep-GM AUC | contrast |
+|---|---|---|---|---|
+| oracle (truth) | 2300 | 1553.3 | 0.990 | 72% |
+| wrong (-20%, uncorrected) | 1840 | 1568.2 | 0.584 | 11% |
+| **recovered (from data)** | **2306** | 1553.2 | **0.990** | **71%** |
+
+**Recovered 2306 vs true 2300 m/s -- 0.3% error from a -20% cold start -- and the
+resulting GM/WM is indistinguishable from the oracle.** The misfit is a clean
+convex bowl with its minimum at truth: the diploe is well-conditioned, not merely
+sensitive. Cost: ~33 min of forward-only simulation for the scan.
+
+**Caveats.** The diploe is treated as a single uniform scalar; real diploe varies
+spatially in porosity and thickness. Only the PROPERTY was perturbed -- geometry
+was known exactly, so combined pose + property error is the untested compound case.
+Inverse crime (same solver both directions) and noiseless data as elsewhere.
+
+### Risk register after four axes (all measured)
+1. ~~Diploe speed error~~ — **CLOSED** by co-inversion (0.3% recovery)
+2. Skull pose error — cliff at 0.25 vox; MOFI clears it with ~3.5x margin
+3. Bulk skull speed error — graceful (5% tolerable, 10% marginal)
+4. Coverage — needs >=32 elements
+5. Noise — tolerable to 10 dB
+6. Skull attenuation error — nearly irrelevant even at 2x
+7. **AUC is not image quality** — open; needs a spatial-fidelity metric
+8. **No real ultrasound data** — the remaining gate
+
+## FREQUENCY LADDER RESULT — stages 2 and 3 (2026-10-22, off-GB10)
+
+Stage 1 is the GB10 Run 1 above. Stages 2-3 ran on cloud serverless GPUs via
+`scripts/beam_gmwm_ladder.py` (beam RTX5090, 32 GB) and `scripts/modal_gmwm_ladder.py`
+(Modal A100-80GB). Same config as Run 1 for comparability: phase B transcranial,
+16 src / 128 rec, 20 iters/band × 4 shots/iter, 2 bands, skull at truth, noiseless.
+
+| stage | freq | N | res | ppw | ribbon vox | **nuclei AUC / %** | **ribbon AUC / %** | CSF AUC / % | wall / cost |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 300 kHz | 112 | 2.60 mm | 3.2 | 1.9 | 0.998 / 96% | 0.848 / 47% | 1.000 / 88% | ~1 h GB10 |
+| 2 | 400 kHz | 144 | 1.95 mm | 3.1 | 2.4 | 0.998 / 91% | 0.798 / 32% | 1.000 / 75% | 22.6 min RTX5090, ~$0.45 |
+| 3 | 500 kHz | 176 | 1.56 mm | 3.1 | 2.9 | 0.994 / 82% | 0.858 / 38% | 1.000 / 73% | 75 min A100-80, ~$3 |
+
+**1. Frequency alone does NOT resolve the 3 mm ribbon.** Ribbon AUC is flat across the
+ladder (0.848 → 0.798 → 0.858) while the voxel count across the ribbon goes 1.9 → 2.9 and
+the nominal λ/2 resolution goes 2.60 → 1.56 mm. The scope's "honest expectation" that
+stage 3 is where the ribbon resolves is **falsified at this iteration budget**.
+
+**2. Every recovered contrast DECLINES with N at fixed budget** — nuclei 96 → 91 → 82%,
+CSF 88 → 75 → 73% — even the large-contrast control. The voxel count grows 2.1× (stage 2)
+and 3.9× (stage 3) but the gradient budget (20 × 4 shots × 2 bands) is unchanged, and
+the reconstructions are visibly speckle-dominated. The natural reading is **under-
+iteration**, not a resolution ceiling: the ladder's cost law (N^4.87) should have had the
+iteration count scaled with it. **Tested: stage 2 at 2× iters × 2× shots (`s2B_it40s8`, 87 min RTX5090, ~$1.60):**
+
+| stage 2 budget | nuclei AUC / % | ribbon AUC / % | CSF AUC / % |
+|---|---|---|---|
+| 20 it × 4 shots | 0.998 / 91% | 0.798 / 32% | 1.000 / 75% |
+| **40 it × 8 shots** | 0.992 / **94%** | **0.806** / **45%** | 1.000 / **81%** |
+
+Budget recovers the *contrast percentages* (nuclei, CSF and ribbon all climb back toward
+stage-1 values) — so the decline with N was under-iteration — but **ribbon AUC does not
+move (0.798 → 0.806)**. The ribbon's separability is capped by something the budget does
+not touch. Prime suspect: **points-per-wavelength.** Every ladder stage runs its top band
+at ppw 3.1 (the ladder held ppw fixed and bought resolution with N); the 2-D run that
+resolved the ribbon (AUC 1.000) used ppw 6.2. At 3 ppw the pseudospectral solver is
+accurate but the *gradient* of a 1%-contrast, 2-3-voxel feature may be dispersion-
+and discretisation-noise-dominated. Decisive test: decouple N from frequency —
+300 kHz on the N=176 grid (ppw 4.9, nominal res 2.6 mm > ribbon) and 400 kHz on N=176
+(ppw 4.2). If the ribbon resolves at ppw ~5 with *coarser* nominal λ/2, the ceiling was
+solver accuracy, not wavelength. Needs a `--N` override in `gmwm_velocity_3d.py`.
+
+**3. The deep-gray GM/WM contrast is robust to all of this** (AUC ≥ 0.994 at every stage)
+— the Guasch-class deliverable holds at 500 kHz / 1 mm voxels transcranially.
+
+**Caveats.** ppw 3.1 at the top band is the aggressive end (the 2-D run that resolved the
+ribbon used 6.2); the two bands cover only the top half-octave per stage; skull at truth,
+noiseless, inverse crime as elsewhere.
+
+**Infrastructure notes.** Stage 2 OOMs on a 24 GB RTX4090 (one 14.4 GiB checkpoint-segment
+block on ~13 GB resident); fits the 32 GB RTX5090. Stage 3 (~55 GB peak) needs an 80 GB card:
+beam's are on-demand-only (+$25 managed-compute credits); Modal A100-80GB serverless worked
+first time, 75 min. Serverless economics: a stage-3 run is ~$3 — the ladder is cheap to re-run.

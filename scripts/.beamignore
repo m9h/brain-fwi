@@ -4,3 +4,8 @@
 !beam_dps_posterior_3d.py
 !beam_kwave_smoke.py
 !beam_kwave_gen.py
+!beam_mofi3d_cmaes.py
+!beam_cuda13_smoke.py
+!beam_absorption_fwi.py
+!beam_gmwm_ladder.py
+!beam_fetch_results.py

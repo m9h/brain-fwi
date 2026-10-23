@@ -36,7 +36,8 @@ image = (
 )
 
 
-@function(gpu=GPU, image=image, timeout=6 * 3600)
+# defaults are cpu=0.125 / 128 MiB (jax import alone OOMs, exit 137) and timeout=3600; -1 = no cap
+@function(gpu=GPU, image=image, cpu=4, memory="16Gi", timeout=-1)
 def run(prior_bytes, crop_bytes, norm_bytes, cfg):
     import io, sys, time
     sys.path.insert(0, "/opt/brain-fwi")

@@ -44,9 +44,12 @@ ap.add_argument("--n-rec", type=int, default=128)
 ap.add_argument("--noise-db", type=float, default=None,
                 help="additive white-noise SNR in dB (None = noiseless)")
 ap.add_argument("--tag", type=str, default="")
+ap.add_argument("--N", type=int, default=None,
+                help="grid override: decouple ppw from the stage's bands (ladder holds ppw~3.1 "
+                     "fixed; the 2-D ribbon result used ppw 6.2). e.g. --stage 1 --N 176 = ppw 4.9")
 args = ap.parse_args()
 S = STAGES[args.stage]
-N, BANDS, FREQ = S["N"], S["bands"], S["freq"]
+N, BANDS, FREQ = (args.N or S["N"]), S["bands"], S["freq"]
 
 OUT = "results/gmwm_velocity_3d"; os.makedirs(OUT, exist_ok=True)
 TAG = f"s{args.stage}{args.phase}" + (f"_{args.tag}" if args.tag else "")

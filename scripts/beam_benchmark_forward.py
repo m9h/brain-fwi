@@ -33,7 +33,7 @@ image = (
 )
 
 
-@function(gpu=GPU, image=image, timeout=1800)
+@function(gpu=GPU, image=image, cpu=4, memory="16Gi", timeout=1800)   # defaults (0.125 cpu/128 MiB) OOM on jax import
 def bench():
     import sys, time, json
     sys.path.insert(0, "/opt/brain-fwi")
