@@ -446,3 +446,77 @@ ppw (in flight). Stage-1 runs on an RTX5090 take ~8 min (~$0.15), so this is a
 same-afternoon sweep. (c) The speckle floor (4-5 m/s, lowered only slowly by coverage:
 7.6 → 4.4 m/s for 8 → 128 elements, raised by noise to 8.5 at 10 dB) is the remaining
 limiter for *everything* small; it is a regularisation problem, not a frequency one.
+
+### CONFIRMED: freeing the interface recovers the sub-skull ribbon (`--invert-all`, stage 1)
+
+Same stage-1 transcranial config, but the CSF gap and skull are *inverted* (started at
+truth) instead of frozen. RTX5090, ~8 min, ~$0.15.
+
+| stage 1 transcranial | ribbon AUC / % | inner AUC / % | **outer AUC / %** | speckle σ | SSIM | brain RMSE |
+|---|---|---|---|---|---|---|
+| skull + gap FROZEN (s1B) | 0.848 / 47% | 0.887 / +55% | **0.375 / −21%** | 5.01 | 0.245 | 9.13 |
+| skull + gap FREE (s1B_invertall) | **0.941 / 68%** | 0.889 / +53% | **0.935 / +68%** | 5.04 | **0.330** | **6.12** |
+| no skull (s1A, reference) | 0.955 / 110% | 0.895 / +81% | 0.974 / +134% | 7.07 | 0.294 | 8.36 |
+
+- The inner half does not move (0.887 → 0.889) and the speckle does not move (5.0 → 5.0):
+  the ONLY thing that changed is the outer 1.5 mm, which goes from sign-inverted to
+  resolved (−21% → +68%). The mechanism is the frozen-interface edge artefact, full stop.
+- Nuclei 0.998 / 98%, CSF 86% — nothing else is harmed by freeing the skull; the skull
+  starts at truth and the inversion leaves it there (it has no reason to move it).
+- Best SSIM and lowest brain RMSE of the entire campaign, at the coarsest grid.
+
+**Consequence for the pipeline.** "Freeze the known skull" — the campaign's standing
+practice, inherited from the absorption-aware demo where it was essential — is *wrong at
+the skull-adjacent cortex*: a hard mask edge next to a 1300 m/s step dumps the interface
+residual into the first free voxels. The fix is not to invert the skull blindly (with an
+UNKNOWN skull that would re-open the pose/property problems Run 3/4 closed) but to give
+the inversion a *soft* boundary: a tapered mask, a low-learning-rate skull band, or
+inverting a thin interior skirt of the skull with tight bounds. This also reframes Run 3's
+"moderately wrong skull reports the wrong sign" — it is the same artefact amplified.
+
+**For the ladder's purpose: the 3 mm ribbon is resolved at stage 1 (2.6 mm) once the
+interface is handled** — 0.941 transcranial vs 0.955 no-skull. Stages 2-3 are not needed
+to resolve the ribbon; they are needed to go *below* 3 mm.
+
+### Smoothing dissociates the two problems (`--smooth 2.0`, stage 1, interface frozen)
+
+| stage 1 transcranial | nuclei AUC / % | ribbon AUC / % | outer AUC / % | speckle σ | SSIM |
+|---|---|---|---|---|---|
+| σ_grad = 1 (s1B) | 0.998 / 96% | 0.848 / 47% | 0.375 / −21% | 5.01 | 0.245 |
+| σ_grad = 2 (s1B_sm2) | **1.000 / 108%** | **0.000 / −108%** | 0.000 / −173% | **3.37** | 0.102 |
+
+Away from the skull, smoothing is a pure win: speckle −33%, nuclei contrast 108%, AUC 1.000.
+Next to the skull it is catastrophic: a 2-grid-point (3.2 mm) kernel spreads the frozen-
+interface artefact across the *whole* 3 mm ribbon, which comes out perfectly sign-inverted
+(AUC 0.000). Same mechanism as the inner/outer split — smoothing just widens the artefact's
+reach. Prediction: `--invert-all --smooth 2.0` gives the nuclei gain without the ribbon loss
+(in flight). This is also why Run 3's wrong-sign result is dangerous: regularisation, the
+thing one reaches for to clean an image, makes a mis-handled interface *more* convincing.
+
+### CONFIRMED: `--invert-all --smooth 2.0` — the ribbon at stage 1, better than no-skull
+
+| stage 1 transcranial | nuclei AUC / % | **ribbon AUC / %** | inner | outer | speckle σ | **SSIM** | brain RMSE | CSF % |
+|---|---|---|---|---|---|---|---|---|
+| frozen, σ=1 (s1B) | 0.998 / 96% | 0.848 / 47% | 0.887 | 0.375 | 5.01 | 0.245 | 9.13 | 88% |
+| free, σ=1 (invertall) | 0.998 / 98% | 0.941 / 68% | 0.889 | 0.935 | 5.04 | 0.330 | 6.12 | 86% |
+| frozen, σ=2 (sm2) | 1.000 / 108% | 0.000 / −108% | 0.025 | 0.000 | 3.37 | 0.102 | 15.2 | 75% |
+| **free, σ=2 (invertall_sm2)** | **1.000 / 112%** | **0.974 / 50%** | **0.954** | **0.969** | **3.30** | **0.454** | **5.23** | 68% |
+| no skull, σ=1 (s1A, reference) | 0.955 (nuc 0.978) | 0.955 / 110% | 0.895 | 0.974 | 7.07 | 0.294 | 8.36 | 66% |
+
+Every metric is the campaign's best, at the coarsest grid (2.6 mm, 300 kHz, 8 min, $0.15).
+The transcranial ribbon (0.974) now *exceeds* the no-skull reference (0.955) because the
+smoothing that the no-skull run never had lowers the speckle floor (7.1 → 3.3). The one
+regression is the ventricle amplitude (86 → 68%): smoothing blurs the sharp CSF boundary —
+the expected resolution-for-speckle trade, and the reason σ should not go higher.
+
+**The ladder's premise is retired.** "Resolve the 3 mm ribbon" did not need 500 kHz and
+N=176; it needed (1) a soft, inverted interface instead of a hard-frozen skull and (2) a
+regularisation scale of ~λ/2. Two config changes. Stages 2-3 remain the route to going
+*below* 3 mm and to the real-anatomy folded cortex, and should now be re-run in this
+configuration (in flight).
+
+**Open, and important:** `--invert-all` here starts the skull at TRUTH. With a MOFI-
+recovered skull (0.07 vox) and a co-inverted diploe (0.3%) the start is near-truth, so the
+expectation is that it composes; but a free skull that starts wrong may drift, and that
+is the compound pose+property+free-interface test the campaign has not run. Bounded,
+low-learning-rate inversion of the skull band is the conservative form to build.
