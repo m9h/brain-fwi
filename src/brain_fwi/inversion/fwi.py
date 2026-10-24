@@ -72,7 +72,14 @@ class FWIConfig:
         pml_size: PML absorbing boundary thickness (grid points).
         cfl: CFL stability number.
         gradient_smooth_sigma: Gaussian smoothing sigma for gradients
-            (in grid points). 0 = no smoothing.
+            (in grid points). 0 = no smoothing. Ignored when
+            ``gradient_smooth_wavelengths`` is set.
+        gradient_smooth_wavelengths: Smoothing sigma as a fraction of the
+            band's top-frequency wavelength (c_ref = 1540 m/s), converted to
+            grid points per band. Speckle is set by the regularisation scale
+            *in wavelengths*: a sigma fixed in grid points shrinks physically
+            when the grid is refined and is mis-sized at every other band
+            (scope_3d_gmwm_run.md). ~0.5 is the measured sweet spot.
         loss_fn: Loss function name ('l2', 'envelope', 'multiscale').
         envelope_weight: Weight for envelope term in multiscale loss.
         mask: Optional binary mask for inversion region.
@@ -94,6 +101,7 @@ class FWIConfig:
     pml_size: int = 20
     cfl: float = 0.3
     gradient_smooth_sigma: float = 3.0
+    gradient_smooth_wavelengths: Optional[float] = None
     loss_fn: str = "l2"
     envelope_weight: float = 0.5
     mask: Optional[jnp.ndarray] = None
@@ -452,19 +460,37 @@ def _bandpass_signal(signal: jnp.ndarray, dt: float, fmin: float, fmax: float) -
     return jnp.real(jnp.fft.ifft(S * bandpass))
 
 
-def _finalize_gradient(grad, grad_sq_accum, n_shots, mask, config):
+_SMOOTH_C_REF = 1540.0   # soft-tissue reference speed for the wavelength-scaled sigma
+
+
+def _smooth_sigma_for_band(config: "FWIConfig", fmax: float, dx: float) -> float:
+    """Gradient-smoothing sigma (grid points) for a band whose top frequency is ``fmax``.
+
+    ``gradient_smooth_wavelengths`` wins when set: sigma = frac * (c_ref / fmax) / dx,
+    so the kernel is a fixed physical fraction of the wavelength regardless of grid
+    refinement or band. Otherwise the legacy grid-point ``gradient_smooth_sigma``.
+    """
+    if config.gradient_smooth_wavelengths is None:
+        return float(config.gradient_smooth_sigma)
+    return float(config.gradient_smooth_wavelengths * (_SMOOTH_C_REF / fmax) / dx)
+
+
+def _finalize_gradient(grad, grad_sq_accum, n_shots, mask, config, sigma=None):
     """Precondition → smooth → mask → max-normalise a single-field gradient.
 
     Shared by the velocity-only and multiparameter (Phase 6) paths so every
     inverted field (c and, when enabled, α) gets identical treatment. After
     max-normalisation the field's max update per iteration is controlled solely
-    by its optimiser step size.
+    by its optimiser step size. ``sigma`` (grid points) overrides the config's
+    smoothing — the band loop passes the wavelength-scaled value.
     """
     if config.precondition:
         illum = jnp.sqrt(grad_sq_accum / n_shots)
         grad = grad / (illum + config.precondition_floor * jnp.max(illum))
-    if config.gradient_smooth_sigma > 0:
-        grad = _smooth_gradient(grad, config.gradient_smooth_sigma)
+    if sigma is None:
+        sigma = config.gradient_smooth_sigma
+    if sigma > 0:
+        grad = _smooth_gradient(grad, sigma)
     if mask is not None:
         grad = grad * mask
     return grad / (jnp.max(jnp.abs(grad)) + 1e-30)
@@ -634,9 +660,11 @@ def run_fwi(
         if band_idx < start_band:
             continue
 
+        band_sigma = _smooth_sigma_for_band(config, fmax, dx)
         if config.verbose:
             print(f"\n  Band {band_idx+1}/{len(config.freq_bands)}: "
-                  f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz")
+                  f"{fmin/1e3:.0f}-{fmax/1e3:.0f} kHz  (gradient smoothing sigma "
+                  f"{band_sigma:.2f} grid pts)")
 
         # Bandpass the source signal and observed data for this frequency band
         if config.skip_bandpass:
@@ -711,18 +739,18 @@ def run_fwi(
                 band_idx, it, config)
             if config.invert_attenuation:
                 gc = _finalize_gradient(
-                    grad["c"], grad_sq_accum["c"], n_shots, config.mask, config)
+                    grad["c"], grad_sq_accum["c"], n_shots, config.mask, config, band_sigma)
                 if alpha_released:
                     ga = _finalize_gradient(
                         grad["a"], grad_sq_accum["a"], n_shots,
-                        config.attenuation_mask, config)
+                        config.attenuation_mask, config, band_sigma)
                     ga = ga * (config.attenuation_lr / config.learning_rate)
                 else:
                     ga = jnp.zeros_like(grad["a"])   # c-first: α frozen
                 grad = {"c": gc, "a": ga}
             else:
                 grad = _finalize_gradient(
-                    grad, grad_sq_accum, n_shots, config.mask, config)
+                    grad, grad_sq_accum, n_shots, config.mask, config, band_sigma)
 
             # Optimizer update + clip to physical bounds
             updates, opt_state = optimizer.update(grad, opt_state, params)
