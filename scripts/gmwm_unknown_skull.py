@@ -45,6 +45,14 @@ ap.add_argument("--shots-per-iter", type=int, default=4)
 ap.add_argument("--n-src", type=int, default=16)
 ap.add_argument("--n-rec", type=int, default=64)
 ap.add_argument("--tag", type=str, required=True)
+# --- interface handling (scope_3d_gmwm_run.md): a hard-frozen skull sign-inverts the sub-skull
+# cortex; freeing it + smoothing at ~lambda/2 fixed the synthetic ribbon 0.85 -> 0.97 with the
+# skull at TRUTH. Here the skull starts at the WRONG (estimated) pose -- the compound test.
+ap.add_argument("--interface", choices=["frozen", "free", "soft"], default="frozen",
+                help="frozen = Run-3 behaviour (estimated skull excluded); free = skull shell + CSF "
+                     "gap inverted too; soft = shell at a low relative lr (--soft-weight)")
+ap.add_argument("--soft-weight", type=float, default=0.2)
+ap.add_argument("--smooth", type=float, default=1.0, help="gradient_smooth_sigma (grid pts); ~lambda/2 = 2")
 args = ap.parse_args()
 
 OUT = "results/gmwm_unknown_skull"; os.makedirs(OUT, exist_ok=True)
@@ -101,8 +109,14 @@ rho_est = compose_rho(skull_est)
 # brain interior held homogeneous; skull placed at the ESTIMATED pose
 base_init = np.where(brain, 1560.0, C_WATER).astype(np.float32)
 c_init = (base_init*(1-skull_est) + C_SKULL*skull_est).astype(np.float32)
-# exclude the ESTIMATED skull from the inverted region (MOFI insight)
+# exclude the ESTIMATED skull from the inverted region (MOFI insight) -- metrics always use this
 inv_mask = brain & (skull_est < 0.05)
+# the FWI mask: frozen (Run 3) or the whole head shell (CSF gap + estimated skull) free / soft
+head_shell = ((rb <= sc_out + 2*w) | (skull_est > 0.01)) & ~brain
+if args.interface == "frozen":
+    fwi_mask = inv_mask.astype(np.float32)
+else:
+    fwi_mask = brain.astype(np.float32) + (1.0 if args.interface == "free" else args.soft_weight) * head_shell
 
 ref = build_medium(build_domain((N,)*3, dx), CFG_CMAX, 1000.0, pml_size=PML)
 t_end = 1.6 * FOV / 1500.0
@@ -122,7 +136,8 @@ recv = ri_
 print(f"[{args.tag}] pose error {args.pose_vox:.2f} vox / {args.pose_deg:.2f} deg -> "
       f"skull-mass mismatch {mismatch*100:.1f}%  | ellipsoidal head, soft warp", flush=True)
 print(f"  N={N} dx={dx*1e3:.2f}mm nt={nt} | {args.n_src} src / {args.n_rec} rec | "
-      f"inverted voxels {int(inv_mask.sum())}", flush=True)
+      f"inverted voxels {int(inv_mask.sum())} | interface={args.interface} "
+      f"(+shell {int(head_shell.sum()) if args.interface != 'frozen' else 0}) smooth={args.smooth}", flush=True)
 
 t0 = time.time()
 obs = generate_observed_data(jnp.asarray(c_true), jnp.asarray(rho_true), dx, src_list, recv,
@@ -137,7 +152,7 @@ print(f"  obs {tuple(obs.shape)} in {time.time()-t0:.0f}s | starting residual {r
 cfg = FWIConfig(freq_bands=BANDS, n_iters_per_band=args.iters,
                 shots_per_iter=args.shots_per_iter, learning_rate=4.0,
                 c_min=1480.0, c_max=CFG_CMAX, pml_size=PML, cfl=0.3,
-                gradient_smooth_sigma=1.0, mask=jnp.asarray(inv_mask.astype(np.float32)),
+                gradient_smooth_sigma=args.smooth, mask=jnp.asarray(fwi_mask),
                 precondition=True, verbose=False)
 res = run_fwi(obs, jnp.asarray(c_init), jnp.asarray(rho_est), dx, src_list, recv, sig, dt,
               t_end, config=cfg)
@@ -157,7 +172,8 @@ def auc(pos, neg):
 wm_v = c_rec[wm_m]
 out = dict(tag=args.tag, pose_vox=args.pose_vox, pose_deg=args.pose_deg,
            skull_mismatch_pct=mismatch*100, start_residual_pct=rel0*100,
-           n_src=args.n_src, n_rec=args.n_rec, wm_median=float(np.median(wm_v)))
+           n_src=args.n_src, n_rec=args.n_rec, wm_median=float(np.median(wm_v)),
+           interface=args.interface, smooth=args.smooth, iters=args.iters)
 print(f"  WM median {np.median(wm_v):.1f} (true {C_WM})", flush=True)
 for nm, m, truth, key in [("deep-gray nuclei (GM/WM contrast)", nuc_m, C_GM, "nuclei"),
                           ("cortical ribbon 3mm", rib_m, C_GM, "ribbon"),

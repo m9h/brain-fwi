@@ -9,3 +9,4 @@
 !beam_absorption_fwi.py
 !beam_gmwm_ladder.py
 !beam_fetch_results.py
+!beam_run_script.py
