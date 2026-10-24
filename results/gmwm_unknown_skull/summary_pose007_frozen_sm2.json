@@ -1,0 +1,34 @@
+{
+  "tag": "pose007_frozen_sm2",
+  "pose_vox": 0.07,
+  "pose_deg": 0.1,
+  "skull_mismatch_pct": 2.1933352574706078,
+  "start_residual_pct": 14.604586362838745,
+  "n_src": 16,
+  "n_rec": 64,
+  "wm_median": 1552.87255859375,
+  "interface": "frozen",
+  "smooth": 2.0,
+  "iters": 12,
+  "nuclei": {
+    "true": 17.0,
+    "recovered": 10.903564453125,
+    "pct": 64.13861443014706,
+    "auc": 0.9855291288732235,
+    "n_vox": 148
+  },
+  "ribbon": {
+    "true": 17.0,
+    "recovered": -0.359619140625,
+    "pct": -2.1154067095588234,
+    "auc": 0.478361826759584,
+    "n_vox": 3388
+  },
+  "csf": {
+    "true": -51.5,
+    "recovered": -21.0826416015625,
+    "pct": 40.93716815837379,
+    "auc": 0.9999306368513192,
+    "n_vox": 230
+  }
+}
