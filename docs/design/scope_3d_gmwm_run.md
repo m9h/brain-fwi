@@ -550,8 +550,11 @@ scale it with ppw when the grid is refined.
 vs. the frozen-interface, σ=1 ladder: ribbon 0.848 / 0.798 / 0.858 → **0.974 / 0.945 / 0.961**. The fixed config lifts
 the ribbon by ~0.1-0.15 AUC at every stage and halves the speckle. Speckle keeps falling
 with N under the fixed config (3.3 → 2.75) — the λ/2 kernel now has more voxels to average.
-The ring amplitude falls with N at fixed budget (50 → 35%), the under-iteration effect
-measured earlier; a budget ∝ N³ ladder is the clean follow-up.
+The ring amplitude falls with N at fixed budget (50 → 35 → 39%), the under-iteration effect
+measured earlier. **Tested: stage 2 at 2.1× budget (30 it × 6 shots, 70 min A100-80)** —
+ribbon AUC 0.945 → 0.951, outer ring 38 → 44%, nuclei RMSE 5.9 → 5.0, SSIM unchanged. In the
+fixed configuration the budget is close to saturated: budget ∝ N³ is NOT needed; the remaining
+ring-amplitude deficit is the λ/2 smoothing's blur, not under-iteration.
 
 **Headline (stage 3, 500 kHz, 1.02 mm voxels, transcranial, skull at truth, noiseless):
 3 mm cortical ribbon AUC 0.961 (inner 0.936 / outer 0.973), deep-gray GM/WM AUC 1.000 /
@@ -573,3 +576,86 @@ changes. Total cloud cost of the stage 2-3 ladder, the ppw series and the remedy
    sub-skull cortex and regularisation makes it *more* convincing. Fixed here with a free
    interface started at truth; the UNKNOWN-skull version (MOFI pose + co-inverted diploe +
    free/soft interface) is the untested compound case and the next run.
+
+## RUN 5a — the compound test: free/soft interface + λ/2 smoothing with an UNKNOWN skull
+
+`gmwm_unknown_skull.py` (ellipsoidal head, soft warp, skull placed at the ESTIMATED pose,
+Run-3 config: N=112, 16 src / 64 rec, 12 it × 4 shots) with the new `--interface` /
+`--smooth` flags. 7 runs in parallel on Modal A100-80GB, ~11 min each. Baselines = Run 3.
+
+| pose error | interface, σ | **deep-GM AUC / %** | ribbon AUC / % | CSF % | WM median |
+|---|---|---|---|---|---|
+| 0 (control) | frozen, 1 (Run 3) | 0.913 / 64% | 0.572 / 9% | 52% | 1553.5 |
+| 0 | **free, 2** | **0.983** / 67% | 0.588 / 7% | 47% | 1553.8 |
+| **0.07 vox (MOFI)** | frozen, 1 (Run 3) | 0.941 / 64% | 0.626 / 16% | 48% | 1552.7 |
+| 0.07 | frozen, **2** | 0.986 / 64% | **0.478 / −2%** | 41% | 1552.9 |
+| 0.07 | **free, 2** | **0.984** / 63% | 0.668 / 16% | 41% | 1553.0 |
+| 0.07 | soft 0.2×, 2 | 0.985 / 64% | 0.668 / 16% | 41% | 1552.8 |
+| 0.50 vox (cliff) | frozen, 1 (Run 3) | 0.734 / 45% | 0.686 / 43% | 45% | 1552.3 |
+| 0.50 | **free, 2** | **0.817** / 52% | 0.727 / 42% | 38% | 1552.1 |
+| 0.50 | soft 0.2×, 2 | 0.816 / 52% | 0.726 / 43% | 40% | 1551.8 |
+| 1.00 vox | frozen, 1 (Run 3) | 0.436 / −11% | 0.597 / 27% | 61% | 1557.7 |
+| 1.00 | **free, 2** | **0.335 / −31%** | 0.615 / 26% | 61% | 1558.0 |
+
+**1. The fix COMPOSES with a MOFI-accuracy skull.** Deep-GM AUC 0.941 → 0.984 at 0.07 vox
+(≈ the 0.983 at perfect pose); the gain survives to the 0.5-vox cliff (0.734 → 0.817). The
+"free interface started at truth" caveat is retired for the regime MOFI actually delivers.
+
+**2. A free skull from a grossly wrong start is WORSE** — at 1 vox, 0.436 → 0.335 and the
+contrast goes from −11% to **−31%**: the wrong-sign regime deepens when the skull is allowed
+to move from a bad pose. The free interface is safe inside the MOFI regime and harmful
+outside it. Pose uncertainty must gate it (and be *reported*).
+
+**3. Soft (0.2× lr) ≡ free** at 0.07 and 0.5 vox (0.985 vs 0.984, 0.816 vs 0.817). The
+low-lr band buys nothing here; whether it protects at 1 vox is being tested.
+
+**4. Frozen + σ=2 sign-inverts the ribbon again** (16% → −2%, AUC 0.478) on the ellipsoidal
+head, reconfirming the interface artefact — and note deep-GM AUC still *rose* (0.986): the
+image that is wrong about the cortex looks better by the headline metric.
+
+**5. The ribbon is not recoverable in this runner's configuration regardless of interface**
+(7-16% ring at pose 0; Run 2 showed 64 elements → ribbon AUC 0.72 and 12 iterations is
+the under-iteration regime). The interface fix cannot show on the ribbon here; a 128-rec /
+20-it rerun at 0.07 vox (in flight) is the fair compound test for the ribbon. CSF amplitude
+drops 52 → 41-47% with σ=2 (ventricle blur), as in the spherical runs.
+
+**Run 5a follow-up (3 more Modal runs).**
+
+| run | deep-GM AUC / % | ribbon AUC / % | CSF % |
+|---|---|---|---|
+| 0.07 vox, 128 rec / 20 it, frozen σ=1 | 0.981 / 106% | 0.567 / 13% | 76% |
+| 0.07 vox, 128 rec / 20 it, **free σ=2** | **0.999 / 107%** | 0.561 / 7% | 67% |
+| 1.00 vox, soft 0.2× σ=2 | 0.326 / −34% | 0.616 / 26% | 62% |
+
+- With full coverage and budget the deep-GM contrast is essentially perfect at MOFI accuracy
+  (**0.999**) — the compound result holds at the configuration that matters.
+- **The soft (low-lr) skull band does NOT protect at 1 vox** (0.326, as bad as free). There is
+  no cheap optimiser-side safeguard: the free interface must be **gated by pose uncertainty**.
+- **The ribbon does not recover on the ellipsoidal head in ANY configuration** — not with
+  coverage, not with budget, not with the interface fix (7-16% ring, AUC 0.56-0.67), whereas
+  the spherical runner reaches 0.974 with the same fix. The spherical ribbon result does not
+  transfer and the cause is not yet identified (candidates: the eroded-ribbon metric mask is a
+  handful of voxels where the ellipsoidal shell is locally ≥3 voxels thick; the array (74 mm)
+  is only ~5 mm off the skull along the long axis; the ribbon is 2.7-3.2 mm thick depending
+  on axis). Open item — see the diagnostic below.
+
+**Diagnostic (offline, ellipsoid geometry rebuilt from the runner).** Mean c vs normalised
+radius rb through the ribbon (rb ∈ [0.948, 1]):
+
+| run | WM speckle σ | ribbon median − WM | by axis (x 2.7 mm / y 3.2 mm / z 3.0 mm) | profile through ribbon |
+|---|---|---|---|---|
+| 0.07 vox, 128/20, frozen σ=1 | 7.0 | +4.3 m/s | +5.4 / +5.5 / +2.4 | 1552 → 1554 → **1587** |
+| 0.07 vox, 128/20, free σ=2 | 4.9 | +2.6 m/s | +3.7 / +3.7 / +0.8 | 1552 → 1554 → **1588** |
+| 0 vox, 64/12, frozen σ=1 (Run 3) | 5.3 | +2.3 m/s | +1.0 / +3.0 / +3.0 | 1554 → 1555 → 1576 |
+
+There is essentially **no ring** in any arm (+2-4 m/s of 17), and the outermost ribbon bin
+reads 1580-1590 because the **truth itself is skull there**: the runner's soft skull is a
+±1-voxel smoothstep starting 1 mm outside the brain, so its inner blend overlaps the ribbon's
+outer voxels in c_true — the ribbon's "resolution test" voxels are partly bone in the truth.
+Together with the thin x-axis ribbon (2.7 mm = 1.7 voxels) this is a phantom-construction
+effect, not an inversion-configuration one; compare the sphere, where 128 rec gives a 47%
+ring (frozen) and the fix lifts it to 0.97. Speckle is also higher on the ellipsoid (7.0 vs
+5.0 frozen; 4.9 vs 3.3 fixed) — the array sits ~5 mm off the skull along the 62 mm axis.
+**Open item:** rebuild the ellipsoidal phantom with a hard (or ≥2 mm stand-off) skull and
+a ≥3-voxel ribbon before using it for ribbon claims; its deep-GM / pose-tolerance results
+(the purpose it was built for) are unaffected.
