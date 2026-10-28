@@ -659,3 +659,30 @@ ring (frozen) and the fix lifts it to 0.97. Speckle is also higher on the ellips
 **Open item:** rebuild the ellipsoidal phantom with a hard (or ≥2 mm stand-off) skull and
 a ≥3-voxel ribbon before using it for ribbon claims; its deep-GM / pose-tolerance results
 (the purpose it was built for) are unaffected.
+
+## RUN 5b — real anatomy (MIDA trilayer) in the fixed configuration
+
+`scripts/gmwm_real_anatomy.py --interface {frozen,free,soft} --smooth 2.0`, Run-4 control
+config (N=144, 16 src / 128 rec, 8 it × 3 shots, absorption-aware, skull at truth), GB10,
+~85 min per arm (`scripts/run5_real_anatomy_interface.sh`, job 1865).
+
+| arm | interface | σ_grad | **deep-GM AUC / %** | **all GM (folded cortex) AUC / %** | CSF AUC / % | WM median |
+|---|---|---|---|---|---|---|
+| Run 4 control (prop_base) | frozen | 1 | 0.990 / 72% | 0.981 / 68% | 1.000 / 104% | 1553.3 |
+| real_frozen_sm2 | frozen | **2** | **0.999** / 82% | 0.992 / 70% | 1.000 / 103% | 1553.0 |
+| real_free_sm2 | **free** | 2 | 0.999 / 78% | **0.994** / 65% | 1.000 / 102% | 1553.6 |
+| real_soft_sm2 | soft 0.2× | 2 | 0.999 / 81% | **0.994** / 69% | 1.000 / 103% | 1553.2 |
+
+1. **The fixed configuration transfers to real anatomy**: deep-GM 0.990 → 0.999 and the
+   folded cortex ("all GM", 19 462 voxels) 0.981 → 0.992-0.994, with the CSF control and the
+   WM median untouched. This is the real-cortex number: **AUC 0.994 for GM vs WM across the
+   whole folded ribbon, transcranially through a trilayer skull.**
+2. **On real anatomy the gain is the λ/2 smoothing, not the interface.** Frozen + σ=2 already
+   gives 0.999 / 0.992; freeing or softening the skull adds ~0.002 on all-GM and costs a few
+   points of deep-GM amplitude. Real cortex sits under thick, irregular CSF, not 1 mm from a
+   hard skull shell as in the spherical phantom, so the frozen-interface edge artefact that
+   dominated the synthetic ribbon is minor here — and, unlike the synthetic case, frozen +
+   σ=2 does NOT sign-invert anything (the CSF buffer absorbs the mask-edge residual).
+3. Practical rule for MIDA-class runs: `--smooth 2.0` (≈ λ/2 at the top band) by default;
+   `--interface soft` when the skull is known to MOFI accuracy; keep the skull frozen when
+   pose uncertainty is large (Run 5a: free is harmful beyond ~0.5 vox).

@@ -185,7 +185,7 @@ def auc(pos, neg):
     return float((rk[y == 1].sum() - pos.size*(pos.size+1)/2)/(pos.size*neg.size))
 
 wm_v = c_rec[wm_m]
-out = dict(tag=args.tag, N=N, dx_mm=dx*1e3, res_mm=lam/2*1e3, ppw=lam/dx,
+out = dict(tag=args.tag, interface=args.interface, smooth=args.smooth, N=N, dx_mm=dx*1e3, res_mm=lam/2*1e3, ppw=lam/dx,
            trilayer=not args.uniform_skull, start_residual_pct=rel0*100,
            skull_dc=args.skull_dc, diploe_dc=args.diploe_dc,
            skull_dalpha=args.skull_dalpha, skull_mean_dc_ms=serr,
