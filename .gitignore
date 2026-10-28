@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 data/
 MIDAv1-0.zip
+
+# Large regenerable FWI reconstruction volumes (keep figures + JSON summaries)
+results/**/*.npy

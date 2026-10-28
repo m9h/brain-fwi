@@ -1,0 +1,24 @@
+{
+  "phase": "A",
+  "true_contrast": 17.0,
+  "recovered_contrast": 16.78515625,
+  "pct_recovered": 98.73621323529412,
+  "cohens_d": 8.253257751464844,
+  "auc": 1.0,
+  "verdict": "RESOLVED - velocity FWI sees GM/WM at imaging frequency",
+  "gm_mean": 1566.617431640625,
+  "wm_mean": 1549.7861328125,
+  "csf_control_pct": 74.95923088592232,
+  "freq_bands": [
+    [
+      250000.0,
+      400000.0
+    ],
+    [
+      400000.0,
+      550000.0
+    ]
+  ],
+  "dx_mm": 0.5,
+  "ribbon_mm": 3.0
+}

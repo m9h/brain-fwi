@@ -22,7 +22,7 @@ dependencies = [
     #      (closes brain-fwi tests/test_attenuation_effect.py XFAIL).
     # See docs/design/phase5_treeby_cox_absorption.md.
     # Drop the @branch pin once both patches land upstream.
-    "jwave @ git+https://github.com/m9h/jwave.git@feature/time-domain-absorption",
+    "jwave @ git+https://github.com/m9h/jwave.git@feature/anisotropic-absorption",
     "jaxdf @ git+https://github.com/ucl-bug/jaxdf.git",
     "equinox>=0.11.0",
     "optax>=0.2.0",

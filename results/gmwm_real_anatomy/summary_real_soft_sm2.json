@@ -1,0 +1,38 @@
+{
+  "tag": "real_soft_sm2",
+  "N": 144,
+  "dx_mm": 1.7500000000000002,
+  "res_mm": 3.0,
+  "ppw": 3.428571428571428,
+  "trilayer": true,
+  "start_residual_pct": 2.6038751006126404,
+  "skull_dc": 0.0,
+  "diploe_dc": 0.0,
+  "skull_dalpha": 1.0,
+  "skull_mean_dc_ms": 0.0,
+  "n_src": 16,
+  "n_rec": 128,
+  "wm_median": 1553.18603515625,
+  "true_contrast": 17.0,
+  "deep_gm": {
+    "true": 17.0,
+    "recovered": 13.69775390625,
+    "pct": 80.57502297794117,
+    "auc": 0.9989848420671321,
+    "n_vox": 528
+  },
+  "all_gm": {
+    "true": 17.0,
+    "recovered": 11.7066650390625,
+    "pct": 68.86273552389706,
+    "auc": 0.9937233503302079,
+    "n_vox": 19462
+  },
+  "csf": {
+    "true": -51.5,
+    "recovered": -52.9879150390625,
+    "pct": 102.88915541565534,
+    "auc": 1.0,
+    "n_vox": 3164
+  }
+}

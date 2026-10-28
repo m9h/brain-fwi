@@ -122,3 +122,76 @@ def make_three_layer_head(
         labels = np.where((lr_ <= 1.0) & (r <= r_cortex_i), BLOOD, labels)
 
     return labels
+
+
+def make_gm_wm_contrast_head(
+    grid_shape: Tuple[int, int, int],
+    dx: float,
+    alpha_ratio: float = None,
+    wm_c_delta: float = 0.0,
+    wm_rho_delta: float = 0.0,
+    add_ventricles: bool = False,
+    add_lesion: bool = False,
+) -> Tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, np.ndarray, np.ndarray
+]:
+    """Build a head phantom with a scorable GM/WM contrast (issue #47).
+
+    The default ITRUSST table (``TISSUE_PROPERTIES``) gives grey matter (label
+    2) and white matter (label 3) *identical* properties, so a reconstruction
+    cannot be scored for GM/WM. This builder maps the three-layer head labels
+    through :func:`properties.tissue_properties_contrasted` instead, which opts
+    into the Kang et al. (2022, Ultrasonics) measured contrast: white-matter
+    attenuation is ``alpha_ratio`` x grey matter's (default 1.5, so GM alpha
+    = 0.6, WM alpha = 0.9 dB/cm/MHz), while sound speed and density are equal
+    by default (``wm_c_delta = wm_rho_delta = 0``). The global default table is
+    NOT mutated — the contrast is opt-in and lives only in this phantom.
+
+    The physical statement encoded here: GM/WM contrast lives in ATTENUATION,
+    not sound speed. The returned ``gm_mask`` / ``wm_mask`` let callers score a
+    recovered attenuation field with
+    :func:`brain_fwi.robustness.metrics.gm_wm_separability`.
+
+    Args:
+        grid_shape: ``(nx, ny, nz)``.
+        dx: Grid spacing in metres.
+        alpha_ratio: WM/GM attenuation ratio. ``None`` -> the module default
+            (:data:`properties.GM_WM_ALPHA_RATIO`, 1.5).
+        wm_c_delta: optional WM sound-speed offset (m/s). Default 0 (no c
+            contrast) so the demonstration isolates attenuation.
+        wm_rho_delta: optional WM density offset (kg/m^3). Default 0.
+        add_ventricles: pass through to :func:`make_three_layer_head`
+            (default False to keep GM/WM regions clean for scoring).
+        add_lesion: pass through to :func:`make_three_layer_head`
+            (default False).
+
+    Returns:
+        ``(c, rho, alpha, labels, dx, gm_mask, wm_mask)`` where ``c``, ``rho``,
+        ``alpha`` are ``float32`` acoustic arrays, ``labels`` is the int32 label
+        volume, and ``gm_mask`` / ``wm_mask`` are boolean tissue masks.
+    """
+    from .properties import (
+        tissue_properties_contrasted,
+        map_labels_to_all,
+        GM_WM_ALPHA_RATIO,
+    )
+
+    if alpha_ratio is None:
+        alpha_ratio = GM_WM_ALPHA_RATIO
+
+    labels = make_three_layer_head(
+        grid_shape, dx, add_ventricles=add_ventricles, add_lesion=add_lesion
+    )
+
+    props = tissue_properties_contrasted(
+        alpha_ratio=alpha_ratio, wm_c_delta=wm_c_delta, wm_rho_delta=wm_rho_delta
+    )
+    acoustic = map_labels_to_all(labels, properties=props)
+    c = np.asarray(acoustic["sound_speed"], np.float32)
+    rho = np.asarray(acoustic["density"], np.float32)
+    alpha = np.asarray(acoustic["attenuation"], np.float32)
+
+    gm_mask = labels == GREY_MATTER
+    wm_mask = labels == WHITE_MATTER
+
+    return c, rho, alpha, labels, dx, gm_mask, wm_mask

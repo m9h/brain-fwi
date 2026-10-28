@@ -1,0 +1,34 @@
+{
+  "tag": "pose050_free_sm2",
+  "pose_vox": 0.5,
+  "pose_deg": 0.6,
+  "skull_mismatch_pct": 16.354691982269287,
+  "start_residual_pct": 38.40147852897644,
+  "n_src": 16,
+  "n_rec": 64,
+  "wm_median": 1552.07080078125,
+  "interface": "free",
+  "smooth": 2.0,
+  "iters": 12,
+  "nuclei": {
+    "true": 17.0,
+    "recovered": 8.8515625,
+    "pct": 52.068014705882355,
+    "auc": 0.8174356346973151,
+    "n_vox": 148
+  },
+  "ribbon": {
+    "true": 17.0,
+    "recovered": 7.1414794921875,
+    "pct": 42.00870289522059,
+    "auc": 0.7270622429231828,
+    "n_vox": 3309
+  },
+  "csf": {
+    "true": -51.5,
+    "recovered": -19.8084716796875,
+    "pct": 38.46305180521845,
+    "auc": 0.9520655398034746,
+    "n_vox": 230
+  }
+}
