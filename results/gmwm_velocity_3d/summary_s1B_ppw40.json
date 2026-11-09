@@ -1,0 +1,36 @@
+{
+  "stage": 1,
+  "phase": "B",
+  "N": 144,
+  "dx_mm": 1.25,
+  "noise_db": null,
+  "top_band_kHz": 300.0,
+  "res_mm": 2.6,
+  "ppw": 4.16,
+  "true_contrast": 17.0,
+  "start_residual_pct": 6.7132070660591125,
+  "n_src": 16,
+  "n_rec": 128,
+  "nuclei": {
+    "true": 17.0,
+    "recovered": 17.158447265625,
+    "pct": 100.9320427389706,
+    "auc": 0.9935280944038335,
+    "n_vox": 484
+  },
+  "ribbon": {
+    "true": 17.0,
+    "recovered": 3.9638671875,
+    "pct": 23.31686580882353,
+    "auc": 0.661602022310655,
+    "n_vox": 16922
+  },
+  "csf": {
+    "true": -51.5,
+    "recovered": -42.26953125,
+    "pct": 82.07675970873787,
+    "auc": 1.0,
+    "n_vox": 608
+  },
+  "verdict": "RESOLVED"
+}

@@ -1,0 +1,73 @@
+[s1B_cov016] N=112 dx=1.61mm FOV=180mm  top band 300kHz lambda=5.20mm ppw=3.2 res=2.60mm
+  ribbon 3mm = 1.9 vox | nuclei 14mm = 8.7 vox | nt=1155 dt=166.3ns | 16 src / 16 rec
+generating observed data ...
+W0725 23:01:59.628809 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:09.247206 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:13.814428 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:18.379249 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:22.929386 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:27.493149 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:32.051813 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:36.610014 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:41.157146 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:45.709282 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:50.258220 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:54.810529 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:02:59.410602 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:03.959761 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:08.520163 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:13.075935 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  done 78s  obs (16, 1155, 16)
+W0725 23:03:17.617242 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:22.182748 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:26.736031 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:31.300207 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:35.850978 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:40.411763 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:44.960420 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:49.544839 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:54.118129 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:03:58.673382 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:03.224919 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:07.790890 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:12.354640 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:16.901572 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:21.479542 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:26.026919 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  starting relative residual 0.31%  (OK)
+running 3-D FWI (2 bands x 15 it x 4 sh) ...
+W0725 23:04:30.601899 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:41.386236 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:57.573531 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:04:57.878478 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:05:58.048484 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:05:58.249699 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:05:58.262776 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0725 23:05:58.307770 3204960 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+FWI: 2 frequency bands, 15 iters/band, 4 shots/iter
+  Grid: (112, 112, 112), dx=1.61 mm
+  Velocity bounds: [1480, 2900] m/s
+  Loss: l2
+
+  Band 1/2: 150-225 kHz
+    Iter 5/15: loss=0.000000, c=[1500, 2800] m/s
+    Iter 10/15: loss=0.000000, c=[1500, 2800] m/s
+    Iter 15/15: loss=0.000000, c=[1500, 2800] m/s
+
+  Band 2/2: 225-300 kHz
+    Iter 5/15: loss=0.000001, c=[1500, 2800] m/s
+    Iter 10/15: loss=0.000001, c=[1500, 2800] m/s
+    Iter 15/15: loss=0.000001, c=[1497, 2800] m/s
+  FWI done 42.7 min
+
+=========== 3-D RESULT: GM/WM via velocity ===========
+  WM median 1553.6 (true 1551.5)
+  deep-gray nuclei (RESOLVABLE, contrast test):
+     true  +17.0 -> recovered   -0.2 m/s (   -1%)  AUC 0.469
+  cortical ribbon 3mm (resolution test):
+     true  +17.0 -> recovered   -1.3 m/s (   -7%)  AUC 0.449
+  ventricle CSF (positive control):
+     true  -51.5 -> recovered  -15.5 m/s (   30%)  AUC 0.944
+  VERDICT (on the resolvable GM/WM contrast): NOT RESOLVED
+=======================================================
+saved results/gmwm_velocity_3d/gmwm3d_s1B_cov016.png

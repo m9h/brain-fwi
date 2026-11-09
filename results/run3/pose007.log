@@ -1,0 +1,53 @@
+W0726 20:40:29.966022 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+[pose007] pose error 0.07 vox / 0.10 deg -> skull-mass mismatch 2.2%  | ellipsoidal head, soft warp
+  N=112 dx=1.61mm nt=1155 | 16 src / 64 rec | inverted voxels 186337
+W0726 20:40:31.254627 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:40:33.937046 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:40:44.201056 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:40:54.326919 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:41:04.509371 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:41:14.712068 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:41:24.871297 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:41:35.082953 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:41:45.240379 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:41:55.379901 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:42:05.611493 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:42:15.937109 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:42:26.158878 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:42:36.417361 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:42:46.521787 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:42:56.682349 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:43:06.906280 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:43:17.058590 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:43:27.131908 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:43:37.201544 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:43:47.345874 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:43:57.515965 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:44:07.569775 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:44:17.670149 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:44:27.717728 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:44:37.886469 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:44:47.956031 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:44:58.113325 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:45:08.260729 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:45:18.315303 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:45:28.431024 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:45:38.512045 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:45:48.777074 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  obs (16, 1155, 64) in 328s | starting residual 14.60%
+W0726 20:45:58.815249 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:45:59.763025 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:46:00.672925 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:46:15.687416 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:46:50.713590 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:46:51.227916 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:48:53.629446 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:48:53.964387 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:48:53.991647 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0726 20:48:54.079131 4111964 pjrt_executable.cc:642] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+  FWI done 74.6 min
+  WM median 1552.7 (true 1551.5)
+  deep-gray nuclei (GM/WM contrast): true +17.0 -> +10.8 m/s (64%)  AUC 0.941
+  cortical ribbon 3mm: true +17.0 -> +2.8 m/s (16%)  AUC 0.626
+  ventricle (control): true -51.5 -> -24.5 m/s (48%)  AUC 0.999
+  saved summary_pose007.json

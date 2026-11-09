@@ -1,0 +1,12 @@
+{
+  "burial": 4.807003238529509,
+  "rms_signal_pct": 0.9325502004713582,
+  "orientation_corr": -0.9998474870443724,
+  "n_paths": 72,
+  "matched_filter_snr": 1.5825901693204119,
+  "noise_floor": 0.05,
+  "freq_hz": 500000.0,
+  "skull_mm": 6,
+  "ratio": 1.4,
+  "alpha_wm": 0.9
+}

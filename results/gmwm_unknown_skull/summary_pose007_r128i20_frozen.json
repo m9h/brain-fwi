@@ -1,0 +1,34 @@
+{
+  "tag": "pose007_r128i20_frozen",
+  "pose_vox": 0.07,
+  "pose_deg": 0.1,
+  "skull_mismatch_pct": 2.1933352574706078,
+  "start_residual_pct": 13.287949562072754,
+  "n_src": 16,
+  "n_rec": 128,
+  "wm_median": 1552.40576171875,
+  "interface": "frozen",
+  "smooth": 1.0,
+  "iters": 20,
+  "nuclei": {
+    "true": 17.0,
+    "recovered": 17.966552734375,
+    "pct": 105.68560431985294,
+    "auc": 0.9806535366424585,
+    "n_vox": 148
+  },
+  "ribbon": {
+    "true": 17.0,
+    "recovered": 2.214111328125,
+    "pct": 13.024184283088236,
+    "auc": 0.56711337757859,
+    "n_vox": 3388
+  },
+  "csf": {
+    "true": -51.5,
+    "recovered": -39.30224609375,
+    "pct": 76.31504095873787,
+    "auc": 0.9999940861414067,
+    "n_vox": 230
+  }
+}

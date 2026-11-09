@@ -5,7 +5,7 @@ Reference: ``docs/design/phase3_diffusion_prior.md``.
 
 from __future__ import annotations
 
-from typing import List, NamedTuple, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -298,6 +298,105 @@ def em_sample(
     return final
 
 
+# ---------------------------------------------------------------------------
+# CFL-safe / stability-controlled guidance (issue #46)
+# ---------------------------------------------------------------------------
+#
+# The binding failure mode for diffusion-prior FWI (InverseBench, ICLR 2025)
+# is a guidance step whose magnitude pushes the sound-speed field past the
+# ``c_max`` used to fix the solver time step, violating the CFL condition
+#     c · dt / dx ≤ C
+# and blowing up the forward solve. The remedy is a *stability-aware*
+# guidance step:
+#
+#   1. a per-step **trust region** on ``Δc`` (bound how far one guidance
+#      step may move any voxel), and
+#   2. a hard **clamp** of the guided field into a CFL-admissible band
+#      ``[c_min, c_max]`` (so no voxel can ever exceed the speed that set
+#      dt, guaranteeing CFL is respected).
+#
+# Both are pure, jit-friendly array ops so they can be unit-tested in
+# isolation and dropped into the DPS reverse loop.
+
+
+class GuidanceLimiter(NamedTuple):
+    """Trust-region + CFL-band bounds for a guidance/velocity update.
+
+    Attributes:
+        c_min: lower admissible sound speed (m/s). Use ``-inf`` to disable.
+        c_max: upper admissible sound speed (m/s). This must be the
+            ``c_max`` used to choose the solver ``dt`` — clamping to it
+            guarantees the CFL condition ``c·dt/dx ≤ C`` cannot be
+            violated by the guided field.
+        max_delta: trust region — maximum absolute per-step change
+            ``|Δc|`` any voxel may take. ``inf`` (default) disables the
+            trust region, leaving only the band clamp active.
+    """
+
+    c_min: float = -jnp.inf
+    c_max: float = jnp.inf
+    max_delta: float = jnp.inf
+
+
+class LimiterInfo(NamedTuple):
+    """Diagnostics from one :func:`limit_guidance_step` call.
+
+    Attributes:
+        bound_any: True if the limiter altered *any* voxel (clamp or
+            trust region bound somewhere).
+        n_bound: number of voxels the limiter altered.
+        max_abs_delta: the largest ``|Δc|`` actually applied (post-limit).
+    """
+
+    bound_any: jax.Array
+    n_bound: jax.Array
+    max_abs_delta: jax.Array
+
+
+def cfl_admissible_cmax(dx: float, dt: float, cfl_number: float = 0.3) -> jax.Array:
+    """Largest sound speed admissible under CFL for a given ``(dx, dt)``.
+
+    Inverts the CFL stability condition ``c·dt/dx ≤ C``::
+
+        c_max = C · dx / dt
+
+    A field kept at or below this value cannot violate CFL for a solver
+    whose time step was chosen from ``dx`` at CFL number ``cfl_number``.
+    """
+    return jnp.asarray(cfl_number * dx / dt)
+
+
+def limit_guidance_step(
+    c_prev: jax.Array,
+    c_proposed: jax.Array,
+    limiter: GuidanceLimiter,
+) -> Tuple[jax.Array, LimiterInfo]:
+    """Apply the trust region + CFL-band clamp to a proposed field update.
+
+    Given the current field ``c_prev`` and a proposed (post-guidance)
+    field ``c_proposed``:
+
+      1. compute the raw step ``Δc = c_proposed − c_prev``;
+      2. clip ``Δc`` to ``[−max_delta, +max_delta]`` (trust region);
+      3. clamp ``c_prev + Δc`` into ``[c_min, c_max]`` (CFL band).
+
+    Returns the limited field and a :class:`LimiterInfo` reporting where
+    the limiter bound (for logging). A permissive limiter (``±inf``
+    bounds) is an exact identity.
+    """
+    delta = c_proposed - c_prev
+    delta = jnp.clip(delta, -limiter.max_delta, limiter.max_delta)
+    c_new = jnp.clip(c_prev + delta, limiter.c_min, limiter.c_max)
+
+    bound_mask = jnp.abs(c_new - c_proposed) > 0.0
+    info = LimiterInfo(
+        bound_any=jnp.any(bound_mask),
+        n_bound=jnp.sum(bound_mask.astype(jnp.int32)),
+        max_abs_delta=jnp.max(jnp.abs(c_new - c_prev)),
+    )
+    return c_new, info
+
+
 def dps_sample(
     score_fn,
     sde: VPSDE,
@@ -310,6 +409,7 @@ def dps_sample(
     key: jax.Array,
     t_min: float = 1e-3,
     t_max: float = 1.0,
+    guidance_limiter: Optional[GuidanceLimiter] = None,
 ) -> jax.Array:
     """Diffusion Posterior Sampling (Chung et al. 2023, §9.7).
 
@@ -330,6 +430,16 @@ def dps_sample(
         n_samples, dim, n_steps: sampler shape + step budget.
         zeta: guidance strength (Phase 3 §5).
         key: PRNG key.
+        guidance_limiter: optional stability-controlled guidance (issue
+            #46). When supplied, each reverse step's post-update state is
+            passed through :func:`limit_guidance_step` — a per-step
+            trust region on ``Δc`` plus a hard clamp into the
+            CFL-admissible band ``[c_min, c_max]`` — treating the
+            diffusion state as a (direct) sound-speed field. This stops a
+            large guidance step from pushing any voxel past the ``c_max``
+            used to set the solver ``dt`` (the InverseBench failure
+            mode). ``None`` (default) leaves the sampler exactly
+            unchanged; a permissive limiter (``±inf`` bounds) is a no-op.
 
     Returns:
         ``(n_samples, dim)`` posterior samples.
@@ -361,6 +471,12 @@ def dps_sample(
         key, sk = jr.split(key)
         z = jr.normal(sk, theta.shape)
         new_theta = theta - drift * dt + jnp.sqrt(beta_t * dt) * z
+        if guidance_limiter is not None:
+            new_theta, _ = jax.vmap(
+                lambda prev, prop: limit_guidance_step(
+                    prev, prop, guidance_limiter,
+                )
+            )(theta, new_theta)
         return (new_theta, key), None
 
     (final, _), _ = jax.lax.scan(body, (theta, key), jnp.arange(n_steps))

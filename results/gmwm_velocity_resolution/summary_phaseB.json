@@ -1,0 +1,24 @@
+{
+  "phase": "B",
+  "true_contrast": 17.0,
+  "recovered_contrast": 2.90283203125,
+  "pct_recovered": 17.075482536764707,
+  "cohens_d": 0.9540303945541382,
+  "auc": 0.7521542334919792,
+  "verdict": "PARTIAL - contrast recovered but not cleanly separable",
+  "gm_mean": 1554.26953125,
+  "wm_mean": 1551.3538818359375,
+  "csf_control_pct": 73.7280984526699,
+  "freq_bands": [
+    [
+      250000.0,
+      400000.0
+    ],
+    [
+      400000.0,
+      550000.0
+    ]
+  ],
+  "dx_mm": 0.5,
+  "ribbon_mm": 3.0
+}

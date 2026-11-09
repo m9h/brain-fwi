@@ -1,0 +1,38 @@
+{
+  "tag": "real_frozen_sm2",
+  "N": 144,
+  "dx_mm": 1.7500000000000002,
+  "res_mm": 3.0,
+  "ppw": 3.428571428571428,
+  "trilayer": true,
+  "start_residual_pct": 2.6038751006126404,
+  "skull_dc": 0.0,
+  "diploe_dc": 0.0,
+  "skull_dalpha": 1.0,
+  "skull_mean_dc_ms": 0.0,
+  "n_src": 16,
+  "n_rec": 128,
+  "wm_median": 1552.9625244140625,
+  "true_contrast": 17.0,
+  "deep_gm": {
+    "true": 17.0,
+    "recovered": 13.9075927734375,
+    "pct": 81.80936925551471,
+    "auc": 0.9990205851816356,
+    "n_vox": 528
+  },
+  "all_gm": {
+    "true": 17.0,
+    "recovered": 11.9566650390625,
+    "pct": 70.33332375919117,
+    "auc": 0.991780081964638,
+    "n_vox": 19462
+  },
+  "csf": {
+    "true": -51.5,
+    "recovered": -52.9625244140625,
+    "pct": 102.83985323118932,
+    "auc": 1.0,
+    "n_vox": 3164
+  }
+}

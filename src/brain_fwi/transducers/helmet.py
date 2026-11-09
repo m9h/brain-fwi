@@ -137,6 +137,96 @@ def helmet_array_3d(
     return jnp.array(np.column_stack([x, y, z]))
 
 
+def clinical_helmet_3d(
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    radius_ap: float = 0.095,
+    radius_lr: float = 0.080,
+    radius_si: float = 0.100,
+    freq: float = 300e3,
+    standoff: float = 0.007,
+    polar_max_deg: float = 158.0,
+    n_elements: Optional[int] = None,
+    c_water: float = 1500.0,
+    scalp_mask: Optional[np.ndarray] = None,
+    dx: Optional[float] = None,
+) -> jnp.ndarray:
+    """Clinically-realistic imaging helmet (Imperial/Guasch target).
+
+    Improves on :func:`helmet_array_3d` in three ways grounded in the real
+    devices (see ``docs/design/helmet_array_plan.md``):
+
+    1. **Frequency-aware density** — element count from ~λ/2 sampling at
+       ``freq`` (anchored to a realistic sub-Nyquist imaging density, ~512 at
+       300 kHz, scaling as f²), instead of a fixed 256.
+    2. **Full azimuth, face *aperture* only** — keeps 360° coverage of the
+       cranial vault (vertex → ``polar_max_deg``), removing only the
+       anterior-inferior face cone (eyes/airway), not the whole anterior.
+    3. **Scalp-conformal** — when a ``scalp_mask`` (+ ``dx``) is given, each
+       element is projected onto the patient's actual scalp surface plus
+       ``standoff``, hugging the real head instead of a generic ellipsoid.
+
+    Args:
+        center: head centre in metres.
+        radius_ap/lr/si: skull semi-axes (m); the ellipsoid fallback shape.
+        freq: top operating frequency (Hz) → element spacing.
+        standoff: water/gel standoff from scalp to element (m).
+        polar_max_deg: polar coverage from vertex (0°); 140° ≈ down to the ears.
+        n_elements: override the frequency-derived count.
+        scalp_mask: optional (nx,ny,nz) bool head mask for conformal projection.
+        dx: grid spacing (m), required with ``scalp_mask``.
+
+    Returns:
+        (n_elements, 3) array of element positions in metres.
+    """
+    if n_elements is None:
+        n_elements = int(np.clip(512 * (freq / 300e3) ** 2, 64, 2048))
+    a, b, cc = radius_ap + standoff, radius_lr + standoff, radius_si + standoff
+
+    n_over = int(n_elements * 3)
+    golden = (1 + np.sqrt(5)) / 2
+    idx = np.arange(n_over)
+    theta = np.arccos(1 - 2 * idx / n_over)            # 0 = vertex
+    phi = 2 * np.pi * idx / golden
+    ux = np.sin(theta) * np.cos(phi)                   # anterior (+x)
+    uy = np.sin(theta) * np.sin(phi)                   # lateral
+    uz = np.cos(theta)                                 # superior (+z)
+
+    keep = theta <= np.radians(polar_max_deg)
+    keep &= ~((ux > 0.5) & (uz < -0.15))               # remove face aperture only
+    theta, phi, ux, uy, uz = (v[keep] for v in (theta, phi, ux, uy, uz))
+
+    if len(theta) > n_elements:
+        sel = _farthest_point_subsample_sphere(
+            theta, phi, n_elements, np.random.default_rng(42))
+        ux, uy, uz = ux[sel], uy[sel], uz[sel]
+
+    dirs = np.column_stack([ux, uy, uz])
+    if scalp_mask is not None and dx is not None:
+        pos = _project_to_scalp(dirs, np.asarray(center), np.asarray(scalp_mask), dx, standoff)
+    else:
+        pos = np.column_stack([center[0] + a * ux, center[1] + b * uy, center[2] + cc * uz])
+    return jnp.array(pos)
+
+
+def _project_to_scalp(dirs, center, scalp_mask, dx, standoff):
+    """March each unit direction out from the head centre, find the outermost
+    scalp voxel, and place the element ``standoff`` beyond it."""
+    N = np.asarray(scalp_mask.shape)
+    max_steps = int(np.max(N))
+    out = np.zeros((len(dirs), 3))
+    for i, d in enumerate(dirs):
+        d = d / (np.linalg.norm(d) + 1e-12)
+        last_r = 0.0
+        for s in range(max_steps):
+            ijk = np.round((center + d * (s * dx)) / dx).astype(int)
+            if np.any(ijk < 0) or np.any(ijk >= N):
+                break
+            if scalp_mask[ijk[0], ijk[1], ijk[2]]:
+                last_r = s * dx
+        out[i] = center + d * (last_r + standoff)
+    return out
+
+
 def _farthest_point_subsample_sphere(
     theta: np.ndarray, phi: np.ndarray, target: int, rng
 ) -> np.ndarray:
