@@ -8,3 +8,10 @@ MIDAv1-0.zip
 
 # Large regenerable FWI reconstruction volumes (keep figures + JSON summaries)
 results/**/*.npy
+
+# MIDA-derived outputs must never be committed (IT'IS licence 2.3.2/2.3.3: no redistribution of derivatives)
+results/vhd_mida/*.h5
+results/vhd_mida/*.png
+results/gmwm_real_anatomy/*.png
+results/gmwm_real_anatomy/*.npz
+results/gmwm_real_anatomy/*.h5
