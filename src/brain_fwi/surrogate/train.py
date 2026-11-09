@@ -106,6 +106,14 @@ def _normalise_c(c: jnp.ndarray, c_min: float, c_max: float) -> jnp.ndarray:
     return (c - c_min) / (c_max - c_min)
 
 
+def _voxelise_positions(arr_or_metres: np.ndarray, dx: float) -> List[Tuple[int, int, int]]:
+    """Convert (N, 3) positions to integer voxel-coord tuples."""
+    arr = np.asarray(arr_or_metres)
+    if arr.dtype.kind == "f":
+        arr = np.round(arr / dx).astype(np.int32)
+    return [tuple(int(x) for x in row) for row in arr]
+
+
 def _extract_source_positions(reader_item) -> List[Tuple[int, int, int]]:
     """Pull integer source grid coords from a Phase-0 sample.
 
@@ -114,16 +122,34 @@ def _extract_source_positions(reader_item) -> List[Tuple[int, int, int]]:
     shard, so we can read the coords from the first sample.
     """
     if "transducer_positions_grid" in reader_item:
-        arr = np.asarray(reader_item["transducer_positions_grid"])
-    elif "transducer_positions" in reader_item and "dx" in reader_item:
-        positions_m = np.asarray(reader_item["transducer_positions"])
-        dx = float(reader_item["dx"])
-        arr = np.round(positions_m / dx).astype(np.int32)
-    else:
-        raise KeyError(
-            "sample lacks transducer_positions_grid or (transducer_positions + dx)"
+        return _voxelise_positions(
+            np.asarray(reader_item["transducer_positions_grid"]), dx=1.0,
         )
-    return [tuple(int(x) for x in row) for row in arr]
+    elif "transducer_positions" in reader_item and "dx" in reader_item:
+        return _voxelise_positions(
+            np.asarray(reader_item["transducer_positions"]),
+            float(reader_item["dx"]),
+        )
+    raise KeyError(
+        "sample lacks transducer_positions_grid or (transducer_positions + dx)"
+    )
+
+
+def _extract_receiver_positions(reader_item) -> List[Tuple[int, int, int]]:
+    """Pull integer receiver grid coords. Falls back to source positions
+    when the sample doesn't store sensor coords explicitly (the v2a
+    helmet uses the same array for emitters and receivers).
+    """
+    if "sensor_positions_grid" in reader_item:
+        return _voxelise_positions(
+            np.asarray(reader_item["sensor_positions_grid"]), dx=1.0,
+        )
+    if "sensor_positions" in reader_item and "dx" in reader_item:
+        return _voxelise_positions(
+            np.asarray(reader_item["sensor_positions"]),
+            float(reader_item["dx"]),
+        )
+    return _extract_source_positions(reader_item)
 
 
 def train_fno_surrogate(
@@ -135,12 +161,15 @@ def train_fno_surrogate(
     c_min: float = 1400.0,
     c_max: float = 3200.0,
     learning_rate: float = 1e-3,
+    lr_schedule: str = "cosine",
+    lr_alpha: float = 0.01,
     lambda_spec: float = 0.3,
+    batch_size: int = 1,
     source_positions: Optional[Sequence[Tuple[int, int, int]]] = None,
     held_out_ids: Optional[Sequence[str]] = None,
     log_every: int = 50,
     verbose: bool = True,
-    batch_size: int = 1,
+    mesh: Optional[object] = None,
 ) -> Tuple[CToTraceFNO3D, List[float]]:
     """Train ``model`` on the ``reader``'s samples with gradient accumulation.
 
@@ -151,16 +180,40 @@ def train_fno_surrogate(
         n_steps: number of gradient updates to perform.
         key: PRNG key for sample selection.
         c_min, c_max: velocity-normalisation bounds.
-        learning_rate: Adam LR.
+        learning_rate: peak Adam LR; ``cosine`` decays to
+            ``lr_alpha * learning_rate`` over ``n_steps``.
+        lr_schedule: ``"cosine"`` (default) or ``"constant"``. Cosine
+            stops the late-training divergence we observed in the
+            constant-LR FNO production v2 (loss bottomed at 0.48 on
+            step 193, bounced up to 1.04 by step 1000).
+        lr_alpha: cosine final/initial LR ratio. 0.01 → end at 1e-5
+            when ``learning_rate=1e-3``.
         lambda_spec: spectral-loss weight.
         source_positions: override the auto-extracted helmet.
         held_out_ids: sample ids to exclude from training.
         log_every: print a loss line every N updates.
         verbose: print progress.
-        batch_size: number of samples to average per gradient step (gradient accumulation).
+        mesh: optional ``jax.sharding.Mesh`` over the ``'shots'`` axis.
+            When set, per-step forward/backward uses
+            :func:`brain_fwi.surrogate.parallel.shot_parallel_loss`
+            instead of the serial :func:`surrogate_loss`. Source axis
+            is sharded across mesh devices so each device handles
+            ``n_src / n_devices`` shots in parallel. Required for the
+            A100:4 production launcher; transparent on a 1-device mesh
+            (equivalence regression-tested).
+        batch_size: gradient-accumulation count. Sums per-sample
+            gradients across N samples before each Adam step. >1
+            lowers per-step variance and smooths the loss curve;
+            equivalent to a batch of size N without materialising a
+            batched-shape input (the FNO body still consumes single
+            c-fields per call).
 
     Returns:
-        ``(trained_model, loss_history)``.
+        ``(best_model, loss_history)``. The first element is the model
+        weights from the lowest-loss step seen, NOT the model at the
+        end of training. With cosine LR this usually coincides with the
+        last step, but with constant LR or a destabilising config the
+        best can be hundreds of steps behind the final.
     """
     train_ids = list(reader.sample_ids)
     if held_out_ids is not None:
@@ -173,63 +226,119 @@ def train_fno_surrogate(
         source_positions = _extract_source_positions(reader[train_ids[0]])
     source_positions = list(source_positions)
 
-    optimizer = optax.adam(learning_rate)
+    if lr_schedule == "cosine":
+        lr = optax.cosine_decay_schedule(
+            init_value=learning_rate,
+            decay_steps=n_steps,
+            alpha=lr_alpha,
+        )
+    elif lr_schedule == "constant":
+        lr = learning_rate
+    else:
+        raise ValueError(
+            f"unknown lr_schedule {lr_schedule!r}; expected 'cosine' or 'constant'"
+        )
+
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
+    optimizer = optax.adam(lr)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
+    if mesh is not None:
+        # Lazy import so the rest of the trainer doesn't pay the
+        # parallel module's import cost when running single-GPU.
+        from .parallel import shot_parallel_loss
+
+        @eqx.filter_jit
+        def per_sample_grads(m, c_norm, d_true):
+            def loss_fn(m_):
+                return shot_parallel_loss(
+                    m_, c_norm, d_true, source_positions, mesh, lambda_spec,
+                )
+            return eqx.filter_value_and_grad(loss_fn)(m)
+    else:
+        @eqx.filter_jit
+        def per_sample_grads(m, c_norm, d_true):
+            """Return (loss, grads) for one (c, d) pair without applying."""
+            def loss_fn(m_):
+                return surrogate_loss(m_, c_norm, d_true, source_positions, lambda_spec)
+            return eqx.filter_value_and_grad(loss_fn)(m)
+
     @eqx.filter_jit
-    def compute_loss_and_grad(m, c_norm, d_true):
-        def loss_fn(m_):
-            return surrogate_loss(m_, c_norm, d_true, source_positions, lambda_spec)
-        return eqx.filter_value_and_grad(loss_fn)(m)
+    def apply_grads(m, opt_state, grads):
+        updates, opt_state = optimizer.update(grads, opt_state)
+        m = eqx.apply_updates(m, updates)
+        return m, opt_state
+
+    def _prep_sample(sample):
+        c = jnp.asarray(sample["sound_speed_voxel"], dtype=jnp.float32)
+        d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)
+        c_norm = _normalise_c(c, c_min, c_max)
+        # Phase-0 samples have variable trace length (each MIDA aug has
+        # a slightly different max-c, hence a different CFL-derived dt
+        # and n_timesteps). The FNO head has a fixed-size output, so we
+        # crop to model.n_timesteps. Pad if a sample happens to be
+        # shorter than the model's expected length.
+        n_t_model = int(model.n_timesteps)
+        if d.shape[1] >= n_t_model:
+            d = d[:, :n_t_model, :]
+        else:
+            pad = jnp.zeros(
+                (d.shape[0], n_t_model - d.shape[1], d.shape[2]),
+                dtype=d.dtype,
+            )
+            d = jnp.concatenate([d, pad], axis=1)
+        return c_norm, d
 
     losses: List[float] = []
+    best_loss = float("inf")
+    best_model = model
     n_train = len(train_ids)
-    
-    # Pre-process n_t_model once
-    n_t_model = int(model.n_timesteps)
-
     for s in range(n_steps):
-        # Accumulate gradients over batch_size samples
-        accum_grads = None
-        accum_loss = 0.0
-        
+        # Accumulate grads across `batch_size` independent samples
+        # before applying. Lower per-step gradient variance → smoother
+        # loss curve. Equivalent to a batch of size batch_size but
+        # never materialises a batched-shape input.
+        accumulated_grads = None
+        accumulated_loss = 0.0
         for _ in range(batch_size):
             key, subkey = jr.split(key)
             idx = int(jr.randint(subkey, (), 0, n_train))
             sample = reader[train_ids[idx]]
-            c = jnp.asarray(sample["sound_speed_voxel"], dtype=jnp.float32)
-            d = jnp.asarray(sample["observed_data"], dtype=jnp.float32)
-            c_norm = _normalise_c(c, c_min, c_max)
-
-            if d.shape[1] >= n_t_model:
-                d = d[:, :n_t_model, :]
+            c_norm, d = _prep_sample(sample)
+            sample_loss, sample_grads = per_sample_grads(model, c_norm, d)
+            accumulated_loss += float(sample_loss)
+            if accumulated_grads is None:
+                accumulated_grads = sample_grads
             else:
-                pad = jnp.zeros(
-                    (d.shape[0], n_t_model - d.shape[1], d.shape[2]),
-                    dtype=d.dtype,
+                accumulated_grads = jax.tree.map(
+                    lambda a, b: a + b, accumulated_grads, sample_grads,
                 )
-                d = jnp.concatenate([d, pad], axis=1)
 
-            loss, grads = compute_loss_and_grad(model, c_norm, d)
-            
-            if accum_grads is None:
-                accum_grads = grads
-            else:
-                accum_grads = jax.tree.map(lambda g1, g2: g1 + g2, accum_grads, grads)
-            accum_loss += float(loss)
+        # Average grads across the accumulated samples (so effective LR
+        # matches a single-sample step at the same `learning_rate`).
+        if batch_size > 1:
+            inv_n = 1.0 / float(batch_size)
+            accumulated_grads = jax.tree.map(
+                lambda g: g * inv_n, accumulated_grads,
+            )
+        avg_loss = accumulated_loss / float(batch_size)
 
-        # Average gradients and loss
-        accum_grads = jax.tree.map(lambda g: g / batch_size, accum_grads)
-        mean_loss = accum_loss / batch_size
-        
-        # Apply update
-        updates, opt_state = optimizer.update(accum_grads, opt_state)
-        model = eqx.apply_updates(model, updates)
-        
-        losses.append(mean_loss)
+        model, opt_state = apply_grads(model, opt_state, accumulated_grads)
+        losses.append(avg_loss)
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_model = model
         if verbose and (s + 1) % log_every == 0:
             recent = np.mean(losses[-log_every:])
             print(f"  FNO-train step {s+1}/{n_steps}: "
-                  f"loss={recent:.4f} (avg over last {log_every})")
+                  f"loss={recent:.4f} (avg over last {log_every})  "
+                  f"best={best_loss:.4f}")
 
-    return model, losses
+    if verbose:
+        best_step = int(np.argmin(losses)) + 1
+        print(f"  best loss {best_loss:.4f} at step {best_step}/{n_steps} "
+              f"(returning best, not final={losses[-1]:.4f})")
+
+    return best_model, losses

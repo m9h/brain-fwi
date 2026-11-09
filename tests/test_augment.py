@@ -72,6 +72,95 @@ class TestJitteredProperties:
         assert out["multipliers"].shape[-1] == 3
 
 
+class TestJitteredPropertiesMIDA:
+    """Regression: MIDA labels (1..116) must NOT silently clip to label 11.
+
+    The original ``jittered_properties`` was keyed off BrainWeb's 12-class
+    table, so any MIDA label >= 12 collapsed to trabecular bone (~2300 m/s).
+    The first 1024-sample phase0_v1b run hit this and ~87 % of voxels in
+    every phantom were misrendered as bone marrow, including the
+    background (MIDA label 50). These tests pin the fix.
+    """
+
+    def test_mida_labels_do_not_clip_to_trabecular(self):
+        from brain_fwi.phantoms.mida import mida_jittered_properties
+
+        # Labels span the bug-prone range: 50 (water/background),
+        # 12 (white matter), 33 (cortical bone), 52 (trabecular bone),
+        # 26 (air cavity).
+        labels = jnp.asarray(
+            [[[50, 12, 33], [52, 26, 50]]], dtype=jnp.int32
+        )
+        out = mida_jittered_properties(labels, jr.PRNGKey(0), intensity=0.0)
+        c = np.asarray(out["sound_speed"])
+        # No jitter → exact nominal values from MIDA_ACOUSTIC_PROPERTIES.
+        np.testing.assert_allclose(c[0, 0, 0], 1500.0, atol=1e-3)  # water
+        np.testing.assert_allclose(c[0, 0, 1], 1560.0, atol=1e-3)  # WM
+        np.testing.assert_allclose(c[0, 0, 2], 2800.0, atol=1e-3)  # cortical
+        np.testing.assert_allclose(c[0, 1, 0], 2300.0, atol=1e-3)  # trabecular
+        np.testing.assert_allclose(c[0, 1, 1], 343.0, atol=1e-3)   # air
+        np.testing.assert_allclose(c[0, 1, 2], 1500.0, atol=1e-3)  # water
+
+    def test_mida_volume_no_unintended_trabecular(self):
+        """Voxels labelled non-trabecular must NOT receive trabecular speed.
+
+        Reproduces the phase0_v1b symptom: mostly-MIDA-50 background
+        was rendered at 2300 m/s. Now everything maps via group, not
+        clip-to-11.
+        """
+        from brain_fwi.phantoms.mida import mida_jittered_properties
+
+        # Mostly background + a single trabecular voxel.
+        labels = np.full((4, 4, 4), 50, dtype=np.int32)
+        labels[0, 0, 0] = 52  # trabecular
+        out = mida_jittered_properties(
+            jnp.asarray(labels), jr.PRNGKey(7), intensity=0.0,
+        )
+        c = np.asarray(out["sound_speed"])
+        # Only the single trabecular voxel should be near 2300 m/s.
+        trabecular_mask = labels == 52
+        assert np.allclose(c[trabecular_mask], 2300.0, atol=1e-3)
+        background_mask = labels == 50
+        assert np.allclose(c[background_mask], 1500.0, atol=1e-3)
+        # Histogram sanity: at intensity=0 there are exactly 2 distinct
+        # values (water + trabecular), not the bone-marrow plateau seen
+        # in the bogus dataset.
+        unique_speeds = np.unique(c.round(1))
+        assert len(unique_speeds) == 2
+
+    def test_mida_jitter_within_clip_bounds(self):
+        from brain_fwi.phantoms.mida import mida_jittered_properties
+
+        # Cortical-bone voxels at high intensity. Multiplier clip is
+        # [0.5, 1.5] → c in [1400, 4200].
+        labels = jnp.full((6, 6, 6), 33, dtype=jnp.int32)
+        out = mida_jittered_properties(
+            labels, jr.PRNGKey(123), intensity=10.0,
+        )
+        c = np.asarray(out["sound_speed"])
+        assert c.max() <= 2800.0 * 1.5 + 1e-3
+        assert c.min() >= 2800.0 * 0.5 - 1e-3
+
+
+class TestJitteredPropertiesCustomTable:
+    """The base_properties + n_labels override path."""
+
+    def test_custom_table_extends_label_range(self):
+        # Two-class custom table with a high-numbered label.
+        custom = {
+            0: (1500.0, 1000.0, 0.0),
+            42: (3000.0, 2000.0, 5.0),
+        }
+        labels = jnp.asarray([[[0, 42]]], dtype=jnp.int32)
+        out = jittered_properties(
+            labels, jr.PRNGKey(0), intensity=0.0,
+            base_properties=custom,
+        )
+        c = np.asarray(out["sound_speed"])
+        np.testing.assert_allclose(c[0, 0, 0], 1500.0, atol=1e-3)
+        np.testing.assert_allclose(c[0, 0, 1], 3000.0, atol=1e-3)
+
+
 class TestDeformationWarp:
     def test_shape_and_dtype_preserved(self):
         labels = _tiny_label_volume()

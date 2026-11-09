@@ -37,9 +37,11 @@ from .properties import (
     map_labels_to_all,
 )
 from .mida import (
+    MIDA_GROUP_FRAC_STD,
     MIDA_TISSUE_GROUPS,
     MIDA_ACOUSTIC_PROPERTIES,
     map_mida_labels_to_acoustic,
+    mida_jittered_properties,
     load_mida_volume,
     load_mida_acoustic,
     resample_volume,
